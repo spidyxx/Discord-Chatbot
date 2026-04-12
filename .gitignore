@@ -1,0 +1,11 @@
+# Secrets – niemals in Git!
+.env
+
+# Laufzeitdaten
+data/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
