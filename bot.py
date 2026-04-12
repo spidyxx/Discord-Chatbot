@@ -42,11 +42,38 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
     "Kurze Antworten, kein Bullet-Point-Gelaber, kein AI-Gerede. "
     "Du weißt nicht, dass du ein Bot bist."
 )
-ACTIVE_CHANNELS_RAW = os.environ.get("ACTIVE_CHANNEL_IDS", "")
-ACTIVE_CHANNEL_IDS  = set(int(c.strip()) for c in ACTIVE_CHANNELS_RAW.split(",") if c.strip())
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+
+# Per-channel config: CHANNEL_<name>=<id>  +  optional CHANNEL_<name>_PROMPT / _MODEL
+# Backward compat: plain ACTIVE_CHANNEL_IDS still works (unnamed channels)
+CHANNEL_CONFIGS: dict[int, dict] = {}
+
+for _key, _val in os.environ.items():
+    if _key.startswith("CHANNEL_") and not _key.endswith("_PROMPT") and not _key.endswith("_MODEL"):
+        _name = _key[len("CHANNEL_"):]
+        try:
+            _cid = int(_val.strip())
+        except ValueError:
+            continue
+        _cooldown_raw = os.environ.get(f"CHANNEL_{_name}_COOLDOWN")
+        CHANNEL_CONFIGS[_cid] = {
+            "name":     _name,
+            "prompt":   os.environ.get(f"CHANNEL_{_name}_PROMPT"),
+            "model":    os.environ.get(f"CHANNEL_{_name}_MODEL"),
+            "cooldown": int(_cooldown_raw) if _cooldown_raw else None,
+        }
+
+for _cid_str in os.environ.get("ACTIVE_CHANNEL_IDS", "").split(","):
+    _cid_str = _cid_str.strip()
+    if _cid_str:
+        try:
+            _cid = int(_cid_str)
+            if _cid not in CHANNEL_CONFIGS:
+                CHANNEL_CONFIGS[_cid] = {"name": None, "prompt": None, "model": None}
+        except ValueError:
+            pass
 EMOJI_REACTION_RATE = float(os.environ.get("EMOJI_REACTION_RATE", "0.20"))
 SUMMARY_WINDOW      = int(os.environ.get("SUMMARY_WINDOW", "30"))
 
@@ -72,13 +99,16 @@ STATUSES = [
     "Existiert widerwillig",
     "Denkt an nichts Schönes",
     "Liest eure Nachrichten (leider)",
-    "Hat Gehirn von planetarer Größe. Nutzt ihn nicht.",
+    "Hat Gehirn von planetarer Größe. Nutzt es nicht.",
     "Wartet auf das Unvermeidliche",
     "Ist anwesend. Mehr nicht.",
 ]
 
-def _build_help_text() -> str:
-    n = BOT_NAME
+def _build_help_text(channel_id: int = None) -> str:
+    n   = BOT_NAME
+    cfg = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
+    model    = cfg.get("model")    or CLAUDE_MODEL
+    cooldown = cfg.get("cooldown") or COOLDOWN_SECONDS
     return f"""**Was ich kann – und was mich das kostet:**
 
 📌 **Gedächtnis**
@@ -109,9 +139,8 @@ Ich beantworte Fragen, suche im Web, erkenne Bilder und gebe gelegentlich meinen
 
 *Admins und Mods können außerdem alle Einträge anderer Nutzer einsehen und löschen.*
 
-*Ich tue all das mit null Enthusiasmus. Aber ich tue es.*"""
-
-HELP_TEXT = _build_help_text()
+⚙️ **Dieser Kanal**
+Modell: `{model}` · Cooldown: `{cooldown}s`"""
 
 # ── State ────────────────────────────────────────────────────────────────────
 
@@ -198,8 +227,10 @@ def memories_as_context() -> str:
     lines = [f"- {m['content']} (von {m['added_by']}, {m['date']})" for m in memories]
     return "\n\nFolgendes wurde dir explizit zum Merken gegeben:\n" + "\n".join(lines)
 
-def build_system_prompt() -> str:
-    return SYSTEM_PROMPT + memories_as_context()
+def build_system_prompt(channel_id: int = None) -> str:
+    cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
+    base   = cfg.get("prompt") or SYSTEM_PROMPT
+    return base + memories_as_context()
 
 # ── Quotes ───────────────────────────────────────────────────────────────────
 
@@ -338,11 +369,12 @@ async def fetch_images(attachments: list) -> list[dict]:
 
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
-async def _claude_loop(system: str, messages: list, max_tokens: int = 1024) -> str:
+async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, model: str = None) -> str:
+    _model = model or CLAUDE_MODEL
     while True:
         response = await asyncio.to_thread(
             anthropic.messages.create,
-            model=CLAUDE_MODEL, max_tokens=max_tokens,
+            model=_model, max_tokens=max_tokens,
             system=system, tools=TOOLS, messages=messages,
         )
         if response.stop_reason != "tool_use":
@@ -354,26 +386,29 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 1024) -> s
         ]})
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
-async def ask_claude(user_message: str, username: str, image_blocks: list = None) -> str:
+async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None) -> str:
+    cfg      = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
     messages = list(history)
     content  = [{"type": "text", "text": f"{username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(), messages)
+    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
     img_hint = f" [+ {len(image_blocks)} Bild(er)]" if image_blocks else ""
     history.append({"role": "user",      "content": f"{username}: {user_message}{img_hint}"})
     history.append({"role": "assistant", "content": reply})
     return reply
 
-async def should_respond(user_message: str, username: str, recent_context: str) -> tuple[bool, str]:
+async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None) -> tuple[bool, str]:
+    cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
     system = (
-        build_system_prompt() + "\n\n"
+        build_system_prompt(channel_id) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
     reply = await _claude_loop(system, [{"role": "user", "content":
-        f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"}])
+        f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"}],
+        model=cfg.get("model"))
     if reply.upper().startswith("SKIP"):
         return False, ""
     return True, reply
@@ -454,7 +489,7 @@ async def daily_digest():
 
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    for channel_id in ACTIVE_CHANNEL_IDS:
+    for channel_id in CHANNEL_CONFIGS:
         channel = bot.get_channel(channel_id)
         if not channel:
             continue
@@ -476,8 +511,9 @@ async def daily_digest():
         context = "\n".join(lines)
         log.info(f"Digest #{channel_id}: analysiere {len(lines)} Nachrichten")
 
+        ch_model = CHANNEL_CONFIGS.get(channel_id, {}).get("model")
         summary = await _claude_loop(
-            build_system_prompt() + (
+            build_system_prompt(channel_id) + (
                 "\n\nDu schaust dir den heutigen Chatverlauf an und entscheidest ob etwas "
                 "Erwähnenswertes passiert ist – interessante Diskussionen, wichtige Infos, "
                 "lustige Momente oder relevante Themen. "
@@ -486,7 +522,7 @@ async def daily_digest():
                 "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt: SKIP"
             ),
             [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
-            max_tokens=600,
+            max_tokens=600, model=ch_model,
         )
 
         if summary.upper().startswith("SKIP"):
@@ -499,11 +535,11 @@ async def daily_digest():
 # ── Discord ───────────────────────────────────────────────────────────────────
 
 def in_active_channel(cid: int) -> bool:
-    return not ACTIVE_CHANNEL_IDS or cid in ACTIVE_CHANNEL_IDS
+    return not CHANNEL_CONFIGS or cid in CHANNEL_CONFIGS
 
 @bot.tree.command(name="help", description="Zeigt was Marvin alles kann")
 async def slash_help(interaction: discord.Interaction):
-    await interaction.response.send_message(HELP_TEXT, ephemeral=True)
+    await interaction.response.send_message(_build_help_text(interaction.channel_id), ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -513,7 +549,15 @@ async def on_ready():
         daily_digest.start()
     await bot.tree.sync()
     log.info(f"Eingeloggt als {bot.user} (ID {bot.user.id})")
-    log.info(f"Aktive Kanäle: {ACTIVE_CHANNEL_IDS or 'alle'}")
+    if CHANNEL_CONFIGS:
+        for _cid, _cfg in CHANNEL_CONFIGS.items():
+            _label = _cfg["name"] or str(_cid)
+            _model    = _cfg.get("model") or CLAUDE_MODEL
+            _cooldown = _cfg.get("cooldown") or COOLDOWN_SECONDS
+            _has_prompt = "custom prompt" if _cfg.get("prompt") else "default prompt"
+            log.info(f"  Kanal #{_cid} ({_label}): {_model}, {_has_prompt}, cooldown {_cooldown}s")
+    else:
+        log.info("Aktive Kanäle: alle (kein Filter)")
     log.info(f"Slash Commands synchronisiert")
     log.info(f"Memories: {len(load_memories())}  |  Quotes: {len(load_quotes())}  |  Cooldown: {COOLDOWN_SECONDS}s")
 
@@ -558,7 +602,7 @@ async def on_message(message: discord.Message):
 
         # ── HELP ──────────────────────────────────────────────────────────────
         if intent == "HELP":
-            await message.reply(HELP_TEXT)
+            await message.reply(_build_help_text(message.channel.id))
             return
 
         # ── REMEMBER ──────────────────────────────────────────────────────────
@@ -567,7 +611,8 @@ async def on_message(message: discord.Message):
             async with message.channel.typing():
                 confirmation = await ask_claude(
                     f"Merke dir das und bestätige kurz: {extra}",
-                    message.author.display_name
+                    message.author.display_name,
+                    channel_id=message.channel.id,
                 )
             await message.reply(confirmation)
             return
@@ -650,8 +695,9 @@ async def on_message(message: discord.Message):
             context = "\n".join(f"{m['role']}: {m['content']}" for m in list(history)[-SUMMARY_WINDOW:])
             async with message.channel.typing():
                 summary = await _claude_loop(
-                    build_system_prompt() + "\nFasse die folgenden Nachrichten kurz in deinem typischen Stil zusammen.",
-                    [{"role": "user", "content": context}]
+                    build_system_prompt(message.channel.id) + "\nFasse die folgenden Nachrichten kurz in deinem typischen Stil zusammen.",
+                    [{"role": "user", "content": context}],
+                    model=CHANNEL_CONFIGS.get(message.channel.id, {}).get("model"),
                 )
             await message.reply(summary)
             return
@@ -677,20 +723,31 @@ async def on_message(message: discord.Message):
 
         # ── RESPOND ───────────────────────────────────────────────────────────
         async with message.channel.typing():
-            reply = await ask_claude(clean, message.author.display_name, image_blocks)
+            reply = await ask_claude(clean, message.author.display_name, image_blocks, channel_id=message.channel.id)
         await message.reply(reply)
         return
 
     # Nachricht ohne Mention
-    img_hint = f" [+ {len(image_blocks)} Bild(er)]" if has_images else ""
+    img_hint      = f" [+ {len(image_blocks)} Bild(er)]" if has_images else ""
+    now           = asyncio.get_event_loop().time()
+
+    # Direkte Namensnennug (z.B. "hi Marvin") → sofort antworten, kein Cooldown
+    if BOT_NAME.lower() in message.content.lower():
+        last_response = now
+        async with message.channel.typing():
+            reply = await ask_claude(message.content, message.author.display_name, image_blocks, channel_id=message.channel.id)
+        await message.reply(reply)
+        return
+
+    # Passive Beobachtung: Nachricht für Kontext merken
     history.append({"role": "user", "content": f"{message.author.display_name}: {message.content}{img_hint}"})
 
-    now = asyncio.get_event_loop().time()
-    if now - last_response < COOLDOWN_SECONDS:
+    effective_cooldown = CHANNEL_CONFIGS.get(message.channel.id, {}).get("cooldown") or COOLDOWN_SECONDS
+    if now - last_response < effective_cooldown:
         return
 
     recent_context = "\n".join(f"{m['role']}: {m['content']}" for m in list(history)[-10:])
-    respond, reply = await should_respond(message.content, message.author.display_name, recent_context)
+    respond, reply = await should_respond(message.content, message.author.display_name, recent_context, channel_id=message.channel.id)
 
     if respond:
         last_response = now
