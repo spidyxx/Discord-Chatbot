@@ -11,8 +11,10 @@ import uuid
 from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
+import io
 import aiohttp
 import discord
+from PIL import Image
 from discord.ext import commands, tasks
 from anthropic import Anthropic
 
@@ -128,6 +130,7 @@ Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 
 📋 **Zusammenfassung**
 `@{n} fass zusammen` – fasst die letzten Nachrichten zusammen
+`@{n} speichere was heute passiert ist` – speichert Persönlichkeit, Witze & Dynamiken der letzten 24h als Memory
 
 🔇 **Stummschalten**
 `@{n} shut up` *(oder ähnliches)* – ich schweige
@@ -186,13 +189,50 @@ def save_memories(m: list):  _write(MEMORY_FILE, m)
 def add_memory(fact: str, added_by: str, user_id: int):
     m = load_memories()
     m.append({
-        "content":  fact,
-        "added_by": added_by,
-        "user_id":  user_id,
-        "date":     datetime.now().strftime("%d.%m.%Y"),
+        "content":   fact,
+        "added_by":  added_by,
+        "user_id":   user_id,
+        "date":      datetime.now().strftime("%d.%m.%Y"),
+        "use_count": 0,
+        "last_used": None,
     })
     save_memories(m)
     log.info(f"Memory gespeichert von {added_by}: {fact}")
+
+# German + English stopwords — too common to be useful for usage detection
+_STOPWORDS = {
+    "der", "die", "das", "und", "ist", "ein", "eine", "einen", "einem", "einer",
+    "mit", "von", "auf", "für", "sich", "nicht", "auch", "als", "aber", "oder",
+    "wenn", "dass", "wird", "sind", "hat", "haben", "wurde", "waren", "beim",
+    "this", "that", "the", "and", "with", "for", "not", "are", "has", "have",
+    "was", "were", "will", "would", "should", "could", "from", "they", "their",
+}
+
+def _memory_keywords(text: str) -> set[str]:
+    """Extract significant words (≥4 chars, not stopwords) from a memory entry."""
+    return {
+        w.lower() for w in re.findall(r"[A-Za-zÄäÖöÜüß]{4,}", text)
+        if w.lower() not in _STOPWORDS
+    }
+
+def update_memory_usage(reply: str):
+    """Increment use_count on memories whose keywords appear in Claude's reply."""
+    if not reply:
+        return
+    memories = load_memories()
+    if not memories:
+        return
+    reply_lower = reply.lower()
+    now_str  = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
+    changed  = False
+    for m in memories:
+        kws = _memory_keywords(m.get("content", ""))
+        if kws and any(kw in reply_lower for kw in kws):
+            m["use_count"] = m.get("use_count", 0) + 1
+            m["last_used"] = now_str
+            changed = True
+    if changed:
+        save_memories(memories)
 
 def list_memories(user_id: int, privileged: bool) -> list:
     memories = load_memories()
@@ -351,9 +391,35 @@ def restore_reminders():
 # ── Images ───────────────────────────────────────────────────────────────────
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Anthropic API hard limit
 
 # Matches direct image URLs in message text (e.g. https://example.com/foo.gif?v=1)
 IMAGE_URL_RE = re.compile(r'https?://\S+\.(?:jpe?g|png|gif|webp)(?:[?#]\S*)?', re.IGNORECASE)
+
+def _compress_image(data: bytes, content_type: str) -> tuple[bytes, str]:
+    """Resize/recompress image bytes until they fit within MAX_IMAGE_BYTES."""
+    img = Image.open(io.BytesIO(data))
+    # GIFs: only the first frame is useful for understanding; flatten to JPEG
+    if getattr(img, "is_animated", False) or img.format == "GIF":
+        img.seek(0)
+    # Convert palette/transparency modes that JPEG can't handle
+    if img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+        content_type = "image/jpeg"
+    # Progressive downscale loop
+    scale = 1.0
+    for quality in (85, 70, 55, 40):
+        buf = io.BytesIO()
+        w, h = img.size
+        scaled = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS) if scale < 1.0 else img
+        fmt = "JPEG" if content_type == "image/jpeg" else "PNG"
+        scaled.save(buf, format=fmt, quality=quality, optimize=True)
+        result = buf.getvalue()
+        if len(result) <= MAX_IMAGE_BYTES:
+            log.info(f"Bild komprimiert: {len(data)/1024/1024:.1f} MB → {len(result)/1024/1024:.1f} MB")
+            return result, content_type
+        scale *= 0.7  # shrink dimensions by ~30% each extra pass
+    raise ValueError(f"Bild konnte nicht auf unter 5 MB komprimiert werden ({len(data)/1024/1024:.1f} MB)")
 
 async def fetch_images(attachments: list, embeds: list = None, content: str = "") -> list[dict]:
     blocks: list[dict] = []
@@ -370,6 +436,8 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
             try:
                 async with session.get(att.url) as resp:
                     data = await resp.read()
+                if len(data) > MAX_IMAGE_BYTES:
+                    data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
                 log.info(f"Bild geladen: {att.filename}")
@@ -389,6 +457,8 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                         if ct not in SUPPORTED_IMAGE_TYPES:
                             continue
                         data = await resp.read()
+                    if len(data) > MAX_IMAGE_BYTES:
+                        data, ct = await asyncio.to_thread(_compress_image, data, ct)
                     b64 = base64.standard_b64encode(data).decode()
                     blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
                     log.info(f"Embed-Bild geladen: {url}")
@@ -406,6 +476,8 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                     if ct not in SUPPORTED_IMAGE_TYPES:
                         continue
                     data = await resp.read()
+                if len(data) > MAX_IMAGE_BYTES:
+                    data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
                 log.info(f"URL-Bild geladen: {url}")
@@ -468,7 +540,9 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    return await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
+    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
+    await asyncio.to_thread(update_memory_usage, reply)
+    return reply
 
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None) -> tuple[bool, str]:
     cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
@@ -493,7 +567,7 @@ async def classify_intent(text: str) -> tuple[str, str]:
         system=(
             "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
             "MUTE – Bot stummschalten\n"
-            "REMEMBER: <fakt> – dauerhaft merken\n"
+            "REMEMBER: <fakt> – dauerhaft merken; nur bei explizitem Speicherwunsch (z.B. 'merke dir:', 'vergiss nicht:', 'speichere:')\n"
             "MEMORY_LIST – eigene/alle Fakten anzeigen\n"
             "MEMORY_DELETE: all – alle eigenen Memories löschen\n"
             "MEMORY_DELETE: <stichwort> – bestimmtes Memory löschen\n"
@@ -502,7 +576,8 @@ async def classify_intent(text: str) -> tuple[str, str]:
             "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
             "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n"
             "SUMMARY – Nutzer fragt was passiert ist, was er verpasst hat, was es Neues gibt, oder möchte eine Zusammenfassung des Chats (z.B. 'was hab ich verpasst', 'was gab's heute', 'was ist hier los', 'fass zusammen')\n"
-            "QUOTE_SAVE – Zitat speichern\n"
+            "SNAPSHOT – Nutzer möchte die Persönlichkeit, Witze, Dynamiken und Ereignisse der letzten 24h als Memory speichern (z.B. 'speichere was heute passiert ist', 'merk dir die heutige Session', 'snapshot')\n"
+            "QUOTE_SAVE – Nutzer antwortet explizit auf eine fremde Nachricht und möchte GENAU DIESE Nachricht als Zitat speichern (z.B. 'merke dieses Zitat', 'speicher das als Zitat') – NICHT wenn jemand selbst einen Text vorschlägt oder in Anführungszeichen zitiert\n"
             "QUOTE_GET – zufälliges Zitat abrufen\n"
             "HELP – Nutzer fragt was der Bot kann\n"
             "RESPOND – alles andere\n\n"
@@ -520,6 +595,7 @@ async def classify_intent(text: str) -> tuple[str, str]:
         ("REMINDER_DELETE:","REMINDER_DELETE"),
         ("REMINDER:",       "REMINDER"),
         ("SUMMARY",         "SUMMARY"),
+        ("SNAPSHOT",        "SNAPSHOT"),
         ("QUOTE_SAVE",      "QUOTE_SAVE"),
         ("QUOTE_GET",       "QUOTE_GET"),
         ("HELP",            "HELP"),
@@ -714,8 +790,13 @@ async def on_message(message: discord.Message):
                 return
             lines = []
             for m in memories:
-                owner = f"**{m['added_by']}** ({m['date']}): " if privileged else f"({m['date']}): "
-                lines.append(owner + m["content"])
+                if privileged:
+                    uses     = m.get("use_count", 0)
+                    last     = m.get("last_used") or "nie"
+                    stats    = f" *(×{uses}, zuletzt: {last})*"
+                    lines.append(f"**{m['added_by']}** ({m['date']}){stats}: {m['content']}")
+                else:
+                    lines.append(f"({m['date']}): {m['content']}")
             header = "Alles was ich weiß:" if privileged else "Was ich über dich weiß:"
             await message.reply(header + "\n" + "\n".join(lines))
             return
@@ -829,6 +910,48 @@ async def on_message(message: discord.Message):
                     model=CHANNEL_CONFIGS.get(message.channel.id, {}).get("model"),
                 )
             await message.reply(summary)
+            return
+
+        # ── SNAPSHOT ──────────────────────────────────────────────────────────
+        if intent == "SNAPSHOT":
+            async with message.channel.typing():
+                since = datetime.now(timezone.utc) - timedelta(hours=24)
+                lines = []
+                async for msg in message.channel.history(after=since, limit=1000, oldest_first=True):
+                    if msg.id == message.id:
+                        continue
+                    ts      = msg.created_at.astimezone(TZ).strftime("%H:%M")
+                    content = resolve_mentions(msg.content or "", msg.mentions)
+                    if msg.attachments:
+                        content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
+                    name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
+                    lines.append(f"[{ts}] {name}: {content}")
+
+                if not lines:
+                    await message.reply("Die letzten 24 Stunden waren leer. Nichts zu speichern.")
+                    return
+
+                response = await asyncio.to_thread(
+                    anthropic.messages.create,
+                    model=CLAUDE_MODEL,
+                    max_tokens=1200,
+                    system=(
+                        "Du analysierst einen Discord-Chatverlauf und erstellst einen kompakten Memory-Eintrag "
+                        "für einen Bot, damit er das Verhalten von heute reproduzieren kann.\n\n"
+                        "Extrahiere und fasse zusammen:\n"
+                        "- Persönlichkeitsmerkmale und Verhaltensweisen die der Bot heute gezeigt hat\n"
+                        "- Running-Gags, Witze, Referenzen und Insider die entstanden sind\n"
+                        "- Regeln, Erwartungen oder Rollen die Nutzer für den Bot etabliert haben\n"
+                        "- Wichtige Fakten über einzelne Nutzer die im Chat festgestellt wurden\n"
+                        "- Beziehungsdynamiken zwischen Nutzern und Bot\n\n"
+                        "Schreibe einen kompakten Fließtext als wäre es ein Gedächtniseintrag des Bots selbst. "
+                        "Kein Bullet-Point-Gelaber. Max 400 Wörter. Nur das Wesentliche."
+                    ),
+                    messages=[{"role": "user", "content": f"Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
+                )
+                fact = response.content[0].text.strip()
+                add_memory(fact, message.author.display_name, message.author.id)
+            await message.reply("Gespeichert. Ich weiß jetzt, was heute war.")
             return
 
         # ── QUOTE_SAVE ────────────────────────────────────────────────────────
