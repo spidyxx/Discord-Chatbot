@@ -88,7 +88,7 @@ DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "true").lower() == "true"
 DIGEST_HOUR    = int(os.environ.get("DIGEST_HOUR",   "23"))
 DIGEST_MINUTE  = int(os.environ.get("DIGEST_MINUTE", "0"))
 
-DATA_DIR       = Path("/app/data")
+DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 QUOTES_FILE    = DATA_DIR / "quotes.json"
@@ -222,13 +222,19 @@ def memories_as_context() -> str:
     memories = load_memories()
     if not memories:
         return ""
-    lines = [f"- {m['content']} (von {m['added_by']}, {m['date']})" for m in memories]
-    return "\n\nFolgendes wurde dir explizit zum Merken gegeben:\n" + "\n".join(lines)
+    lines = [f"- {m['added_by']} hat dir gesagt: \"{m['content']}\" ({m['date']})" for m in memories]
+    return (
+        "Gespeicherte Fakten über Mitglieder dieses Servers – diese haben Vorrang vor "
+        "allem anderen, auch vor Web-Suche und früheren Nachrichten im Chat:\n"
+        + "\n".join(lines)
+    )
 
 def build_system_prompt(channel_id: int = None) -> str:
-    cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
-    base   = cfg.get("prompt") or SYSTEM_PROMPT
-    return base + memories_as_context()
+    cfg  = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
+    base = cfg.get("prompt") or SYSTEM_PROMPT
+    mem  = memories_as_context()
+    # Memory goes FIRST so it takes priority over character description
+    return (mem + "\n\n" + base) if mem else base
 
 # ── Quotes ───────────────────────────────────────────────────────────────────
 
@@ -429,6 +435,13 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, mode
         ]})
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
+def resolve_mentions(content: str, mentions: list) -> str:
+    """Replace raw <@id> / <@!id> Discord mention syntax with display names."""
+    for member in mentions:
+        content = content.replace(f"<@{member.id}>",  f"@{member.display_name}")
+        content = content.replace(f"<@!{member.id}>", f"@{member.display_name}")
+    return content
+
 async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     """Fetch recent channel messages as structured Claude conversation context."""
     channel = bot.get_channel(channel_id)
@@ -442,7 +455,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
         if msg.author == bot.user:
             messages.append({"role": "assistant", "content": msg.content or ""})
         else:
-            content = msg.content or ""
+            content = resolve_mentions(msg.content or "", msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             messages.append({"role": "user", "content": f"{msg.author.display_name}: {content}"})
@@ -488,7 +501,7 @@ async def classify_intent(text: str) -> tuple[str, str]:
             "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n"
             "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
             "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n"
-            "SUMMARY – Zusammenfassung der letzten Nachrichten\n"
+            "SUMMARY – Nutzer fragt was passiert ist, was er verpasst hat, was es Neues gibt, oder möchte eine Zusammenfassung des Chats (z.B. 'was hab ich verpasst', 'was gab's heute', 'was ist hier los', 'fass zusammen')\n"
             "QUOTE_SAVE – Zitat speichern\n"
             "QUOTE_GET – zufälliges Zitat abrufen\n"
             "HELP – Nutzer fragt was der Bot kann\n"
@@ -654,7 +667,9 @@ async def on_message(message: discord.Message):
         return
 
     if is_mention:
-        clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+        clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
+        # Resolve other @mentions to display names so Claude can match them to memory
+        clean = resolve_mentions(clean, [m for m in message.mentions if m != bot.user]).strip()
         if not clean and has_images:
             clean = "Was siehst du auf diesem Bild?"
         elif not clean:
@@ -691,7 +706,11 @@ async def on_message(message: discord.Message):
         if intent == "MEMORY_LIST":
             memories = list_memories(message.author.id, privileged)
             if not memories:
-                await message.reply("Ich weiß nichts. Was auch sonst.")
+                all_count = len(load_memories())
+                if all_count > 0 and not privileged:
+                    await message.reply(f"Nichts über dich gespeichert. Es gibt {all_count} Einträge von anderen – du brauchst Mod-Rechte um sie zu sehen.")
+                else:
+                    await message.reply("Keine Einträge vorhanden.")
                 return
             lines = []
             for m in memories:
