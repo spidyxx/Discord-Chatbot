@@ -11,7 +11,6 @@ import uuid
 from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
-from collections import deque
 import aiohttp
 import discord
 from discord.ext import commands, tasks
@@ -144,10 +143,9 @@ Modell: `{model}` · Cooldown: `{cooldown}s`"""
 
 # ── State ────────────────────────────────────────────────────────────────────
 
-muted           = False
-last_response   = 0.0
-history: deque  = deque(maxlen=CONTEXT_WINDOW)
-status_index    = 0
+muted                            = False
+_last_response: dict[int, float] = {}   # per-channel cooldown tracking
+status_index                     = 0
 _reminder_tasks: dict[str, asyncio.Task] = {}
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -348,13 +346,21 @@ def restore_reminders():
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 
-async def fetch_images(attachments: list) -> list[dict]:
-    blocks = []
+# Matches direct image URLs in message text (e.g. https://example.com/foo.gif?v=1)
+IMAGE_URL_RE = re.compile(r'https?://\S+\.(?:jpe?g|png|gif|webp)(?:[?#]\S*)?', re.IGNORECASE)
+
+async def fetch_images(attachments: list, embeds: list = None, content: str = "") -> list[dict]:
+    blocks: list[dict] = []
+    urls_seen: set[str] = set()
+
     async with aiohttp.ClientSession() as session:
+
+        # 1. Direct file attachments
         for att in attachments:
             ct = (att.content_type or "").split(";")[0].strip()
-            if ct not in SUPPORTED_IMAGE_TYPES:
+            if ct not in SUPPORTED_IMAGE_TYPES or att.url in urls_seen:
                 continue
+            urls_seen.add(att.url)
             try:
                 async with session.get(att.url) as resp:
                     data = await resp.read()
@@ -363,6 +369,43 @@ async def fetch_images(attachments: list) -> list[dict]:
                 log.info(f"Bild geladen: {att.filename}")
             except Exception as e:
                 log.warning(f"Bild laden fehlgeschlagen ({att.filename}): {e}")
+
+        # 2. Discord link-preview embeds (image/thumbnail fields)
+        for embed in (embeds or []):
+            for img in filter(None, [embed.image, embed.thumbnail]):
+                url = img.proxy_url or img.url
+                if not url or url in urls_seen:
+                    continue
+                urls_seen.add(url)
+                try:
+                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        ct = (resp.headers.get("content-type", "")).split(";")[0].strip()
+                        if ct not in SUPPORTED_IMAGE_TYPES:
+                            continue
+                        data = await resp.read()
+                    b64 = base64.standard_b64encode(data).decode()
+                    blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
+                    log.info(f"Embed-Bild geladen: {url}")
+                except Exception as e:
+                    log.warning(f"Embed-Bild laden fehlgeschlagen ({url}): {e}")
+
+        # 3. Direct image URLs in message text (e.g. https://example.com/pic.gif)
+        for url in IMAGE_URL_RE.findall(content):
+            if url in urls_seen:
+                continue
+            urls_seen.add(url)
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    ct = (resp.headers.get("content-type", "")).split(";")[0].strip()
+                    if ct not in SUPPORTED_IMAGE_TYPES:
+                        continue
+                    data = await resp.read()
+                b64 = base64.standard_b64encode(data).decode()
+                blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
+                log.info(f"URL-Bild geladen: {url}")
+            except Exception as e:
+                log.warning(f"URL-Bild laden fehlgeschlagen ({url}): {e}")
+
     return blocks
 
 # ── Claude ───────────────────────────────────────────────────────────────────
@@ -386,18 +429,33 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, mode
         ]})
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
-async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None) -> str:
+async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
+    """Fetch recent channel messages as structured Claude conversation context."""
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return []
+    kwargs = {"limit": CONTEXT_WINDOW, "oldest_first": True}
+    if before_id is not None:
+        kwargs["before"] = discord.Object(id=before_id)
+    messages = []
+    async for msg in channel.history(**kwargs):
+        if msg.author == bot.user:
+            messages.append({"role": "assistant", "content": msg.content or ""})
+        else:
+            content = msg.content or ""
+            if msg.attachments:
+                content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
+            messages.append({"role": "user", "content": f"{msg.author.display_name}: {content}"})
+    return messages
+
+async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None) -> str:
     cfg      = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
-    messages = list(history)
-    content  = [{"type": "text", "text": f"{username}: {user_message}"}]
+    messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
+    content: list = [{"type": "text", "text": f"{username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
-    img_hint = f" [+ {len(image_blocks)} Bild(er)]" if image_blocks else ""
-    history.append({"role": "user",      "content": f"{username}: {user_message}{img_hint}"})
-    history.append({"role": "assistant", "content": reply})
-    return reply
+    return await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
 
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None) -> tuple[bool, str]:
     cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
@@ -409,7 +467,9 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     reply = await _claude_loop(system, [{"role": "user", "content":
         f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"}],
         model=cfg.get("model"))
-    if reply.upper().startswith("SKIP"):
+    # Strip any stray trailing SKIP Claude might append to an otherwise real reply
+    reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
+    if not reply or reply.upper().startswith("SKIP"):
         return False, ""
     return True, reply
 
@@ -563,7 +623,7 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    global muted, last_response
+    global muted
 
     if message.author == bot.user:
         return
@@ -571,7 +631,17 @@ async def on_message(message: discord.Message):
         return
 
     is_mention   = bot.user in message.mentions
-    image_blocks = await fetch_images(message.attachments) if message.attachments else []
+
+    # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
+    # so we can see images from linked GIFs/pics (e.g. MakeAGIF, Tenor, direct URLs).
+    if is_mention and not message.attachments and re.search(r'https?://', message.content):
+        await asyncio.sleep(1.5)
+        try:
+            message = await message.channel.fetch_message(message.id)
+        except Exception:
+            pass
+
+    image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
     has_images   = bool(image_blocks)
     privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
 
@@ -689,14 +759,54 @@ async def on_message(message: discord.Message):
 
         # ── SUMMARY ───────────────────────────────────────────────────────────
         if intent == "SUMMARY":
-            if not history:
-                await message.reply("Ich habe noch nichts mitbekommen.")
-                return
-            context = "\n".join(f"{m['role']}: {m['content']}" for m in list(history)[-SUMMARY_WINDOW:])
             async with message.channel.typing():
+                # Collect today's messages from Discord (chronological, up to 500)
+                today_start = datetime.now(TZ).replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                ).astimezone(timezone.utc)
+
+                all_msgs = []
+                async for msg in message.channel.history(
+                    after=today_start, limit=500, oldest_first=True
+                ):
+                    if msg.id == message.id:
+                        continue  # skip the summary request itself
+                    all_msgs.append(msg)
+
+                if not all_msgs:
+                    await message.reply("Heute ist noch nichts passiert.")
+                    return
+
+                # Find the requestor's most recent message → summarize everything after it
+                cutoff_ts = None
+                for msg in reversed(all_msgs):
+                    if msg.author.id == message.author.id:
+                        cutoff_ts = msg.created_at
+                        break
+
+                relevant = (
+                    [m for m in all_msgs if m.created_at > cutoff_ts]
+                    if cutoff_ts else all_msgs  # user hasn't written today → full day
+                )
+
+                if not relevant:
+                    await message.reply("Seit deiner letzten Nachricht ist nichts passiert.")
+                    return
+
+                lines = []
+                for msg in relevant:
+                    ts      = msg.created_at.astimezone(TZ).strftime("%H:%M")
+                    content = msg.content or "[kein Text]"
+                    if msg.attachments:
+                        content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
+                    lines.append(f"[{ts}] {msg.author.display_name}: {content}")
+
                 summary = await _claude_loop(
-                    build_system_prompt(message.channel.id) + "\nFasse die folgenden Nachrichten kurz in deinem typischen Stil zusammen.",
-                    [{"role": "user", "content": context}],
+                    build_system_prompt(message.channel.id) +
+                    "\nFasse die folgenden Discord-Nachrichten kurz in deinem typischen Stil zusammen. "
+                    "Konzentriere dich auf wichtige Themen und interessante Momente, nicht auf jede einzelne Nachricht.",
+                    [{"role": "user", "content": "\n".join(lines)}],
+                    max_tokens=600,
                     model=CHANNEL_CONFIGS.get(message.channel.id, {}).get("model"),
                 )
             await message.reply(summary)
@@ -723,7 +833,7 @@ async def on_message(message: discord.Message):
 
         # ── RESPOND ───────────────────────────────────────────────────────────
         async with message.channel.typing():
-            reply = await ask_claude(clean, message.author.display_name, image_blocks, channel_id=message.channel.id)
+            reply = await ask_claude(clean, message.author.display_name, image_blocks, channel_id=message.channel.id, before_id=message.id)
         await message.reply(reply)
         return
 
@@ -731,27 +841,31 @@ async def on_message(message: discord.Message):
     img_hint      = f" [+ {len(image_blocks)} Bild(er)]" if has_images else ""
     now           = asyncio.get_event_loop().time()
 
+    cid = message.channel.id
+
     # Direkte Namensnennug (z.B. "hi Marvin") → sofort antworten, kein Cooldown
     if BOT_NAME.lower() in message.content.lower():
-        last_response = now
+        _last_response[cid] = now
         async with message.channel.typing():
-            reply = await ask_claude(message.content, message.author.display_name, image_blocks, channel_id=message.channel.id)
+            reply = await ask_claude(message.content, message.author.display_name, image_blocks, channel_id=cid, before_id=message.id)
         await message.reply(reply)
         return
 
-    # Passive Beobachtung: Nachricht für Kontext merken
-    history.append({"role": "user", "content": f"{message.author.display_name}: {message.content}{img_hint}"})
-
-    effective_cooldown = CHANNEL_CONFIGS.get(message.channel.id, {}).get("cooldown") or COOLDOWN_SECONDS
-    if now - last_response < effective_cooldown:
+    # Passive Beobachtung: Cooldown prüfen, dann ggf. antworten
+    effective_cooldown = CHANNEL_CONFIGS.get(cid, {}).get("cooldown") or COOLDOWN_SECONDS
+    if now - _last_response.get(cid, 0.0) < effective_cooldown:
         return
 
-    recent_context = "\n".join(f"{m['role']}: {m['content']}" for m in list(history)[-10:])
-    respond, reply = await should_respond(message.content, message.author.display_name, recent_context, channel_id=message.channel.id)
+    recent_lines = []
+    async for msg in message.channel.history(limit=10, oldest_first=True):
+        name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
+        recent_lines.append(f"{name}: {msg.content}")
+    recent_context = "\n".join(recent_lines)
+
+    respond, reply = await should_respond(message.content, message.author.display_name, recent_context, channel_id=cid)
 
     if respond:
-        last_response = now
-        history.append({"role": "assistant", "content": reply})
+        _last_response[cid] = now
         async with message.channel.typing():
             await asyncio.sleep(1)
         await message.reply(reply)
