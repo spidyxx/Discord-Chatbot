@@ -47,34 +47,24 @@ COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-# Per-channel config: CHANNEL_<name>=<id>  +  optional CHANNEL_<name>_PROMPT / _MODEL
-# Backward compat: plain ACTIVE_CHANNEL_IDS still works (unnamed channels)
-CHANNEL_CONFIGS: dict[int, dict] = {}
+# Optional overrides for main channels — fall back to the defaults above if not set
+MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
+MAIN_MODEL          = os.environ.get("MAIN_MODEL") or CLAUDE_MODEL
 
-for _key, _val in os.environ.items():
-    if _key.startswith("CHANNEL_") and not _key.endswith("_PROMPT") and not _key.endswith("_MODEL"):
-        _name = _key[len("CHANNEL_"):]
-        try:
-            _cid = int(_val.strip())
-        except ValueError:
-            continue
-        _cooldown_raw = os.environ.get(f"CHANNEL_{_name}_COOLDOWN")
-        CHANNEL_CONFIGS[_cid] = {
-            "name":     _name,
-            "prompt":   os.environ.get(f"CHANNEL_{_name}_PROMPT"),
-            "model":    os.environ.get(f"CHANNEL_{_name}_MODEL"),
-            "cooldown": int(_cooldown_raw) if _cooldown_raw else None,
-        }
-
-for _cid_str in os.environ.get("ACTIVE_CHANNEL_IDS", "").split(","):
+# Main channels: bot actively participates (debounced). Comma-separated IDs via MAIN_CHANNEL_IDS.
+# All other channels: bot only responds to @mentions.
+MAIN_CHANNEL_IDS: set[int] = set()
+for _cid_str in os.environ.get("MAIN_CHANNEL_IDS", "").split(","):
     _cid_str = _cid_str.strip()
     if _cid_str:
         try:
-            _cid = int(_cid_str)
-            if _cid not in CHANNEL_CONFIGS:
-                CHANNEL_CONFIGS[_cid] = {"name": None, "prompt": None, "model": None}
+            MAIN_CHANNEL_IDS.add(int(_cid_str))
         except ValueError:
             pass
+
+# How long (seconds) to wait after the last message before responding in main channels.
+# Resets on each new message so rapid conversations are read as a whole.
+RESPONSE_DELAY = int(os.environ.get("RESPONSE_DELAY", "15"))
 EMOJI_REACTION_RATE = float(os.environ.get("EMOJI_REACTION_RATE", "0.20"))
 SUMMARY_WINDOW      = int(os.environ.get("SUMMARY_WINDOW", "30"))
 
@@ -105,11 +95,8 @@ STATUSES = [
     "Ist anwesend. Mehr nicht.",
 ]
 
-def _build_help_text(channel_id: int = None) -> str:
-    n   = BOT_NAME
-    cfg = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
-    model    = cfg.get("model")    or CLAUDE_MODEL
-    cooldown = cfg.get("cooldown") or COOLDOWN_SECONDS
+def _build_help_text() -> str:
+    n = BOT_NAME
     return f"""**Was ich kann – und was mich das kostet:**
 
 📌 **Gedächtnis**
@@ -138,17 +125,22 @@ Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 
 🌐 **Sonstiges**
 Ich beantworte Fragen, suche im Web, erkenne Bilder und gebe gelegentlich meinen Senf dazu.
+In Hauptkanälen mische ich mich nach {RESPONSE_DELAY}s Stille von selbst ein. In allen anderen nur auf @Mention.
 
 *Admins und Mods können außerdem alle Einträge anderer Nutzer einsehen und löschen.*
 
-⚙️ **Dieser Kanal**
-Modell: `{model}` · Cooldown: `{cooldown}s`"""
+⚙️ **Bot-Konfiguration**
+Hauptkanal-Modell: `{MAIN_MODEL}` · Anderer-Kanal-Modell: `{CLAUDE_MODEL}`
+Antwort-Delay: `{RESPONSE_DELAY}s` · Cooldown: `{COOLDOWN_SECONDS}s`"""
 
 # ── State ────────────────────────────────────────────────────────────────────
 
-muted                            = False
-_last_response: dict[int, float] = {}   # per-channel cooldown tracking
-status_index                     = 0
+muted                             = False
+_last_response:     dict[int, float] = {}   # per-channel cooldown tracking
+_channel_processing: dict[int, bool] = {}   # True while Claude is generating for a channel
+_channel_pending:    dict[int, bool] = {}   # True if new messages arrived during generation
+_active_tasks:      set[asyncio.Task] = set()  # strong refs so tasks aren't GC'd before they run
+status_index                      = 0
 _reminder_tasks: dict[str, asyncio.Task] = {}
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -269,10 +261,18 @@ def memories_as_context() -> str:
         + "\n".join(lines)
     )
 
-def build_system_prompt(channel_id: int = None) -> str:
-    cfg  = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
-    base = cfg.get("prompt") or SYSTEM_PROMPT
-    mem  = memories_as_context()
+def _is_main(channel_id: int | None) -> bool:
+    return channel_id is not None and channel_id in MAIN_CHANNEL_IDS
+
+def _base_prompt(channel_id: int | None) -> str:
+    return MAIN_SYSTEM_PROMPT if _is_main(channel_id) else SYSTEM_PROMPT
+
+def _model(channel_id: int | None) -> str:
+    return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
+
+def build_system_prompt(channel_id: int | None = None) -> str:
+    mem = memories_as_context()
+    base = _base_prompt(channel_id)
     # Memory goes FIRST so it takes priority over character description
     return (mem + "\n\n" + base) if mem else base
 
@@ -534,18 +534,16 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     return messages
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None) -> str:
-    cfg      = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
     content: list = [{"type": "text", "text": f"{username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=cfg.get("model"))
+    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=_model(channel_id))
     await asyncio.to_thread(update_memory_usage, reply)
     return reply
 
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None) -> tuple[bool, str]:
-    cfg    = CHANNEL_CONFIGS.get(channel_id, {}) if channel_id is not None else {}
     system = (
         build_system_prompt(channel_id) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
@@ -553,7 +551,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     )
     reply = await _claude_loop(system, [{"role": "user", "content":
         f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"}],
-        model=cfg.get("model"))
+        model=_model(channel_id))
     # Strip any stray trailing SKIP Claude might append to an otherwise real reply
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
     if not reply or reply.upper().startswith("SKIP"):
@@ -638,7 +636,7 @@ async def daily_digest():
 
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
-    for channel_id in CHANNEL_CONFIGS:
+    for channel_id in MAIN_CHANNEL_IDS:
         channel = bot.get_channel(channel_id)
         if not channel:
             continue
@@ -660,9 +658,8 @@ async def daily_digest():
         context = "\n".join(lines)
         log.info(f"Digest #{channel_id}: analysiere {len(lines)} Nachrichten")
 
-        ch_model = CHANNEL_CONFIGS.get(channel_id, {}).get("model")
         summary = await _claude_loop(
-            build_system_prompt(channel_id) + (
+            build_system_prompt() + (
                 "\n\nDu schaust dir den heutigen Chatverlauf an und entscheidest ob etwas "
                 "Erwähnenswertes passiert ist – interessante Diskussionen, wichtige Infos, "
                 "lustige Momente oder relevante Themen. "
@@ -671,7 +668,7 @@ async def daily_digest():
                 "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt: SKIP"
             ),
             [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
-            max_tokens=600, model=ch_model,
+            max_tokens=600, model=_model(channel_id),
         )
 
         if summary.upper().startswith("SKIP"):
@@ -683,12 +680,9 @@ async def daily_digest():
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
-def in_active_channel(cid: int) -> bool:
-    return not CHANNEL_CONFIGS or cid in CHANNEL_CONFIGS
-
 @bot.tree.command(name="help", description="Zeigt was Marvin alles kann")
 async def slash_help(interaction: discord.Interaction):
-    await interaction.response.send_message(_build_help_text(interaction.channel_id), ephemeral=True)
+    await interaction.response.send_message(_build_help_text(), ephemeral=True)
 
 @bot.event
 async def on_ready():
@@ -698,17 +692,85 @@ async def on_ready():
         daily_digest.start()
     await bot.tree.sync()
     log.info(f"Eingeloggt als {bot.user} (ID {bot.user.id})")
-    if CHANNEL_CONFIGS:
-        for _cid, _cfg in CHANNEL_CONFIGS.items():
-            _label = _cfg["name"] or str(_cid)
-            _model    = _cfg.get("model") or CLAUDE_MODEL
-            _cooldown = _cfg.get("cooldown") or COOLDOWN_SECONDS
-            _has_prompt = "custom prompt" if _cfg.get("prompt") else "default prompt"
-            log.info(f"  Kanal #{_cid} ({_label}): {_model}, {_has_prompt}, cooldown {_cooldown}s")
+    if MAIN_CHANNEL_IDS:
+        log.info(f"Hauptkanäle: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
-        log.info("Aktive Kanäle: alle (kein Filter)")
-    log.info(f"Slash Commands synchronisiert")
-    log.info(f"Memories: {len(load_memories())}  |  Quotes: {len(load_quotes())}  |  Cooldown: {COOLDOWN_SECONDS}s")
+        log.info("Keine Hauptkanäle konfiguriert – antworte nur auf @Mentions")
+    log.info(f"Hauptkanal-Modell: {MAIN_MODEL} | Anderer-Kanal-Modell: {CLAUDE_MODEL}")
+    log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
+
+async def _try_respond(channel_id: int):
+    """Immediately evaluate whether to respond in a main channel.
+
+    _channel_processing[channel_id] is already True when this task starts
+    (set by the on_message caller). The finally block always clears it.
+
+    If new messages arrive while Claude is generating, the result is discarded
+    and Claude re-reads the updated conversation before deciding again.
+    """
+    try:
+        if muted:
+            log.info(f"Kanal #{channel_id}: stumm, ignoriere Nachricht")
+            return
+
+        # Cooldown: don't respond if we already replied recently
+        cooldown_remaining = COOLDOWN_SECONDS - (asyncio.get_event_loop().time() - _last_response.get(channel_id, 0.0))
+        if cooldown_remaining > 0:
+            log.info(f"Kanal #{channel_id}: Nachricht gesehen, Cooldown noch {cooldown_remaining:.0f}s")
+            return
+
+        channel = bot.get_channel(channel_id)
+        if not channel:
+            log.warning(f"Kanal #{channel_id}: channel-Objekt nicht gefunden")
+            return
+
+        while True:
+            # Reset pending flag BEFORE the API call so any message arriving
+            # during generation will set it to True and trigger a re-evaluation.
+            _channel_pending[channel_id] = False
+
+            last_msg     = None
+            recent_lines = []
+            async for msg in channel.history(limit=10, oldest_first=True):
+                name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
+                recent_lines.append(f"{name}: {msg.content}")
+                last_msg = msg
+
+            if not last_msg or last_msg.author == bot.user:
+                return
+
+            log.info(f"Kanal #{channel_id}: evaluiere Antwort auf '{last_msg.content[:60]}' von {last_msg.author.display_name}")
+            recent_context = "\n".join(recent_lines)
+            respond, reply = await should_respond(
+                last_msg.content, last_msg.author.display_name, recent_context, channel_id=channel_id
+            )
+
+            # New message(s) arrived while we were generating — re-read and try again
+            if _channel_pending.get(channel_id):
+                log.info(f"Kanal #{channel_id}: neue Nachrichten während Evaluierung – wiederhole mit aktuellem Kontext")
+                continue
+
+            if respond:
+                log.info(f"Kanal #{channel_id}: antworte")
+                _last_response[channel_id] = asyncio.get_event_loop().time()
+                async with channel.typing():
+                    await asyncio.sleep(0.3)
+                await channel.send(reply)
+            else:
+                log.info(f"Kanal #{channel_id}: SKIP")
+                emoji = await get_emoji_reaction(last_msg.content)
+                if emoji:
+                    try:
+                        await last_msg.add_reaction(emoji)
+                    except discord.HTTPException:
+                        pass
+            return
+    except Exception:
+        log.exception(f"Kanal #{channel_id}: unerwarteter Fehler in _try_respond")
+    finally:
+        _channel_processing[channel_id] = False
+        _channel_pending[channel_id] = False
+
 
 @bot.event
 async def on_message(message: discord.Message):
@@ -716,23 +778,10 @@ async def on_message(message: discord.Message):
 
     if message.author == bot.user:
         return
-    if not in_active_channel(message.channel.id):
-        return
 
-    is_mention   = bot.user in message.mentions
-
-    # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
-    # so we can see images from linked GIFs/pics (e.g. MakeAGIF, Tenor, direct URLs).
-    if is_mention and not message.attachments and re.search(r'https?://', message.content):
-        await asyncio.sleep(1.5)
-        try:
-            message = await message.channel.fetch_message(message.id)
-        except Exception:
-            pass
-
-    image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
-    has_images   = bool(image_blocks)
-    privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
+    is_mention = bot.user in message.mentions
+    is_main    = message.channel.id in MAIN_CHANNEL_IDS
+    log.info(f"on_message: #{message.channel.id} von {message.author} | mention={is_mention} main={is_main} muted={muted}")
 
     # Reaktivieren
     if muted:
@@ -743,6 +792,18 @@ async def on_message(message: discord.Message):
         return
 
     if is_mention:
+        # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
+        if not message.attachments and re.search(r'https?://', message.content):
+            await asyncio.sleep(1.5)
+            try:
+                message = await message.channel.fetch_message(message.id)
+            except Exception:
+                pass
+
+        image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
+        has_images   = bool(image_blocks)
+        privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
+
         clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
         # Resolve other @mentions to display names so Claude can match them to memory
         clean = resolve_mentions(clean, [m for m in message.mentions if m != bot.user]).strip()
@@ -763,7 +824,7 @@ async def on_message(message: discord.Message):
 
         # ── HELP ──────────────────────────────────────────────────────────────
         if intent == "HELP":
-            await message.reply(_build_help_text(message.channel.id))
+            await message.reply(_build_help_text())
             return
 
         # ── REMEMBER ──────────────────────────────────────────────────────────
@@ -860,7 +921,6 @@ async def on_message(message: discord.Message):
         # ── SUMMARY ───────────────────────────────────────────────────────────
         if intent == "SUMMARY":
             async with message.channel.typing():
-                # Collect today's messages from Discord (chronological, up to 500)
                 today_start = datetime.now(TZ).replace(
                     hour=0, minute=0, second=0, microsecond=0
                 ).astimezone(timezone.utc)
@@ -870,14 +930,13 @@ async def on_message(message: discord.Message):
                     after=today_start, limit=500, oldest_first=True
                 ):
                     if msg.id == message.id:
-                        continue  # skip the summary request itself
+                        continue
                     all_msgs.append(msg)
 
                 if not all_msgs:
                     await message.reply("Heute ist noch nichts passiert.")
                     return
 
-                # Find the requestor's most recent message → summarize everything after it
                 cutoff_ts = None
                 for msg in reversed(all_msgs):
                     if msg.author.id == message.author.id:
@@ -886,7 +945,7 @@ async def on_message(message: discord.Message):
 
                 relevant = (
                     [m for m in all_msgs if m.created_at > cutoff_ts]
-                    if cutoff_ts else all_msgs  # user hasn't written today → full day
+                    if cutoff_ts else all_msgs
                 )
 
                 if not relevant:
@@ -902,12 +961,11 @@ async def on_message(message: discord.Message):
                     lines.append(f"[{ts}] {msg.author.display_name}: {content}")
 
                 summary = await _claude_loop(
-                    build_system_prompt(message.channel.id) +
+                    build_system_prompt() +
                     "\nFasse die folgenden Discord-Nachrichten kurz in deinem typischen Stil zusammen. "
                     "Konzentriere dich auf wichtige Themen und interessante Momente, nicht auf jede einzelne Nachricht.",
                     [{"role": "user", "content": "\n".join(lines)}],
-                    max_tokens=600,
-                    model=CHANNEL_CONFIGS.get(message.channel.id, {}).get("model"),
+                    max_tokens=600, model=_model(message.channel.id),
                 )
             await message.reply(summary)
             return
@@ -979,45 +1037,21 @@ async def on_message(message: discord.Message):
         await message.reply(reply)
         return
 
-    # Nachricht ohne Mention
-    img_hint      = f" [+ {len(image_blocks)} Bild(er)]" if has_images else ""
-    now           = asyncio.get_event_loop().time()
+    # No @mention — only main channels get passive responses
+    if not is_main:
+        return
 
     cid = message.channel.id
-
-    # Direkte Namensnennug (z.B. "hi Marvin") → sofort antworten, kein Cooldown
-    if BOT_NAME.lower() in message.content.lower():
-        _last_response[cid] = now
-        async with message.channel.typing():
-            reply = await ask_claude(message.content, message.author.display_name, image_blocks, channel_id=cid, before_id=message.id)
-        await message.reply(reply)
-        return
-
-    # Passive Beobachtung: Cooldown prüfen, dann ggf. antworten
-    effective_cooldown = CHANNEL_CONFIGS.get(cid, {}).get("cooldown") or COOLDOWN_SECONDS
-    if now - _last_response.get(cid, 0.0) < effective_cooldown:
-        return
-
-    recent_lines = []
-    async for msg in message.channel.history(limit=10, oldest_first=True):
-        name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
-        recent_lines.append(f"{name}: {msg.content}")
-    recent_context = "\n".join(recent_lines)
-
-    respond, reply = await should_respond(message.content, message.author.display_name, recent_context, channel_id=cid)
-
-    if respond:
-        _last_response[cid] = now
-        async with message.channel.typing():
-            await asyncio.sleep(1)
-        await message.reply(reply)
+    if _channel_processing.get(cid):
+        # Generation already running — flag that new messages arrived so it re-evaluates
+        log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} während Evaluierung – als pending markiert")
+        _channel_pending[cid] = True
     else:
-        emoji = await get_emoji_reaction(message.content)
-        if emoji:
-            try:
-                await message.add_reaction(emoji)
-            except discord.HTTPException:
-                pass
+        log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} – starte Evaluierung")
+        _channel_processing[cid] = True
+        task = asyncio.create_task(_try_respond(cid))
+        _active_tasks.add(task)
+        task.add_done_callback(_active_tasks.discard)
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 
