@@ -62,9 +62,6 @@ for _cid_str in os.environ.get("MAIN_CHANNEL_IDS", "").split(","):
         except ValueError:
             pass
 
-# How long (seconds) to wait after the last message before responding in main channels.
-# Resets on each new message so rapid conversations are read as a whole.
-RESPONSE_DELAY = int(os.environ.get("RESPONSE_DELAY", "15"))
 EMOJI_REACTION_RATE = float(os.environ.get("EMOJI_REACTION_RATE", "0.20"))
 SUMMARY_WINDOW      = int(os.environ.get("SUMMARY_WINDOW", "30"))
 
@@ -147,12 +144,12 @@ Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 `@{n} shut up` *(oder ähnliches)* – ich schweige
 `@{n}` *(irgendwas)* – reaktiviert mich wieder
 
-*In Hauptkanälen mische ich mich nach {RESPONSE_DELAY}s Stille von selbst ein.*
+*In Hauptkanälen mische ich mich von selbst ein.*
 *Admins und Mods können alle Einträge anderer Nutzer einsehen und löschen.*
 
 ⚙️ **Bot-Konfiguration**
 Hauptkanal-Modell: `{MAIN_MODEL}` · Anderer-Kanal-Modell: `{CLAUDE_MODEL}`
-Antwort-Delay: `{RESPONSE_DELAY}s` · Cooldown: `{COOLDOWN_SECONDS}s`"""
+Cooldown: `{COOLDOWN_SECONDS}s`"""
 
 # ── State ────────────────────────────────────────────────────────────────────
 
