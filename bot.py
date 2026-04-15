@@ -117,36 +117,38 @@ STATUSES = [
 
 def _build_help_text() -> str:
     n = BOT_NAME
-    return f"""**Was ich kann – und was mich das kostet:**
+    return f"""**Was ich kann:**
 
-📌 **Gedächtnis**
+💬 **Allgemein** *(alle Kanäle)*
+Ich beantworte Fragen, suche im Web und erkenne Bilder – immer auf @Mention.
+In anderen Kanälen benutze ich nur den aktuellen Chatverlauf, keine gespeicherten Fakten.
+
+📌 **Gedächtnis** *(nur Hauptkanäle)*
+Gespeicherte Fakten werden nur in Hauptkanälen genutzt – in anderen Kanälen antworte ich ausschließlich auf Basis des Chatverlaufs.
 `@{n} was weißt du alles?` – zeigt gespeicherte Fakten
 `@{n} vergiss alles von mir` – löscht deine eigenen Einträge
 `@{n} vergiss dass ...` – löscht einen bestimmten Eintrag
+`@{n} speichere was heute passiert ist` – speichert Persönlichkeit, Witze & Dynamiken der letzten 24h als Memory
 
-⏰ **Erinnerungen**
+⏰ **Erinnerungen** *(alle Kanäle)*
 `@{n} erinnere mich in 2 Stunden an ...` – einmalige Erinnerung
 `@{n} erinnere uns jeden Freitag um 20 Uhr an ...` – wiederkehrend
 `@{n} zeig meine Erinnerungen` – listet deine aktiven Erinnerungen
 `@{n} lösche Erinnerung [ID]` – löscht eine bestimmte Erinnerung
 
-💬 **Zitate**
+💬 **Zitate** *(alle Kanäle)*
 Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 `@{n} zeig ein Zitat` – zufälliges gespeichertes Zitat
 
-📋 **Zusammenfassung**
+📋 **Zusammenfassung** *(alle Kanäle)*
 `@{n} fass zusammen` – fasst die letzten Nachrichten zusammen
-`@{n} speichere was heute passiert ist` – speichert Persönlichkeit, Witze & Dynamiken der letzten 24h als Memory
 
-🔇 **Stummschalten**
+🔇 **Stummschalten** *(alle Kanäle)*
 `@{n} shut up` *(oder ähnliches)* – ich schweige
 `@{n}` *(irgendwas)* – reaktiviert mich wieder
 
-🌐 **Sonstiges**
-Ich beantworte Fragen, suche im Web, erkenne Bilder und gebe gelegentlich meinen Senf dazu.
-In Hauptkanälen mische ich mich nach {RESPONSE_DELAY}s Stille von selbst ein. In allen anderen nur auf @Mention.
-
-*Admins und Mods können außerdem alle Einträge anderer Nutzer einsehen und löschen.*
+*In Hauptkanälen mische ich mich nach {RESPONSE_DELAY}s Stille von selbst ein.*
+*Admins und Mods können alle Einträge anderer Nutzer einsehen und löschen.*
 
 ⚙️ **Bot-Konfiguration**
 Hauptkanal-Modell: `{MAIN_MODEL}` · Anderer-Kanal-Modell: `{CLAUDE_MODEL}`
@@ -156,6 +158,7 @@ Antwort-Delay: `{RESPONSE_DELAY}s` · Cooldown: `{COOLDOWN_SECONDS}s`"""
 
 muted                             = False
 _last_response:      dict[int, float]   = {}   # per-channel cooldown tracking
+_bot_asked_question: dict[int, bool]    = {}   # True if the bot's last message ended with a question
 _channel_processing: dict[int, bool]    = {}   # True while Claude is generating for a channel
 _channel_pending:    dict[int, bool]    = {}   # True if new messages arrived during generation
 _channel_pending_msg: dict[int, discord.Message] = {}  # latest pending message per channel
@@ -295,7 +298,7 @@ def _model(channel_id: int | None) -> str:
     return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
 
 def build_system_prompt(channel_id: int | None = None, context: str = None) -> str:
-    mem = memories_as_context(context)
+    mem = memories_as_context(context) if _is_main(channel_id) else ""
     base = _base_prompt(channel_id)
     return (mem + "\n\n" + base) if mem else base
 
@@ -754,7 +757,8 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             # Cooldown check on every iteration so a second loop pass (triggered by
             # _channel_pending) can't bypass the cooldown set by the first response.
             cooldown_remaining = COOLDOWN_SECONDS - (asyncio.get_event_loop().time() - _last_response.get(channel_id, 0.0))
-            if cooldown_remaining > 0:
+            question_bypass = _bot_asked_question.pop(channel_id, False)
+            if cooldown_remaining > 0 and not question_bypass:
                 log.info(f"Kanal #{channel_id}: Nachricht gesehen, Cooldown noch {cooldown_remaining:.0f}s")
                 return
 
@@ -798,10 +802,20 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             log.info(f"Kanal #{channel_id}: evaluiere Antwort auf '{last_msg.content[:60]}' von {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
             image_blocks = await fetch_images(last_msg.attachments, list(last_msg.embeds), last_msg.content or "")
-            respond, reply = await should_respond(
-                last_msg.content, last_msg.author.display_name, recent_context,
-                channel_id=channel_id, image_blocks=image_blocks or None,
-            )
+            if question_bypass:
+                # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
+                log.info(f"Kanal #{channel_id}: direkte Antwort auf Bot-Frage – überspringe Evaluierung")
+                reply = await ask_claude(
+                    last_msg.content, last_msg.author.display_name,
+                    image_blocks=image_blocks or None,
+                    channel_id=channel_id, before_id=last_msg.id,
+                )
+                respond = bool(reply)
+            else:
+                respond, reply = await should_respond(
+                    last_msg.content, last_msg.author.display_name, recent_context,
+                    channel_id=channel_id, image_blocks=image_blocks or None,
+                )
             log.info(f"Kanal #{channel_id}: Evaluierung → {'RESPOND: ' + reply[:80] if respond else 'SKIP'}")
 
             # New message(s) arrived while we were generating — re-read and try again
@@ -812,6 +826,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             if respond:
                 log.info(f"Kanal #{channel_id}: antworte")
                 _last_response[channel_id] = asyncio.get_event_loop().time()
+                _bot_asked_question[channel_id] = reply.rstrip().endswith("?")
                 async with channel.typing():
                     await asyncio.sleep(0.3)
                 await channel.send(reply)
