@@ -12,6 +12,9 @@ from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import io
+import html as _html
+import socket
+from urllib.parse import urlparse
 import aiohttp
 import discord
 from PIL import Image
@@ -66,6 +69,9 @@ for _cid_str in os.environ.get("MAIN_CHANNEL_IDS", "").split(","):
 
 EMOJI_REACTION_RATE = float(os.environ.get("EMOJI_REACTION_RATE", "0.20"))
 SUMMARY_WINDOW      = int(os.environ.get("SUMMARY_WINDOW", "30"))
+MAX_FETCH_BYTES     = 512 * 1024   # hard read cap per URL fetch
+MAX_WEBPAGE_CHARS   = 6000         # chars extracted and sent to Claude
+MAX_URLS_PER_MSG    = 2            # max external URLs fetched per message
 
 # Roles that can manage other users' data (comma-separated names)
 MOD_ROLE_NAMES = set(r.strip() for r in os.environ.get("MOD_ROLE_NAMES", "Admin,Mod,Moderator").split(",") if r.strip())
@@ -609,6 +615,11 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     return True, reply
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
+_URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
+_PRIVATE_HOST_RE = re.compile(
+    r'^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|0\.0\.0\.0)',
+    re.IGNORECASE,
+)
 
 def _extract_youtube_id(text: str) -> str | None:
     m = _YT_URL_RE.search(text)
@@ -629,6 +640,70 @@ async def fetch_youtube_transcript(video_id: str) -> str | None:
     except Exception as exc:
         log.warning(f"YouTube-Transkript konnte nicht geladen werden ({video_id}): {exc}")
         return None
+
+def _extract_main_text(raw_html: str) -> str | None:
+    """Strip boilerplate from HTML and return the main readable text."""
+    # Remove blocks that are never useful
+    for tag in ("script", "style", "nav", "header", "footer", "aside", "form", "noscript"):
+        raw_html = re.sub(rf'<{tag}[\s>].*?</{tag}>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
+    # Try to isolate the main content block
+    for pattern in (
+        r'<article[\s>].*?</article>',
+        r'<main[\s>].*?</main>',
+        r'<div[^>]+role=["\']main["\'][^>]*>.*?</div>',
+    ):
+        m = re.search(pattern, raw_html, re.DOTALL | re.IGNORECASE)
+        if m:
+            raw_html = m.group(0)
+            break
+    # Strip remaining tags, decode entities, collapse whitespace
+    text = re.sub(r'<[^>]+>', ' ', raw_html)
+    text = _html.unescape(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    if not text:
+        return None
+    if len(text) > MAX_WEBPAGE_CHARS:
+        text = text[:MAX_WEBPAGE_CHARS] + " […]"
+    return text
+
+
+async def fetch_webpage_text(url: str) -> str | None:
+    """Fetch a web page and return its extracted main text, or None on failure."""
+    if _YT_URL_RE.search(url) or IMAGE_URL_RE.search(url):
+        return None  # Already handled elsewhere
+    # SSRF guard — reject private/loopback hosts before and after DNS resolution
+    try:
+        hostname = urlparse(url).hostname or ""
+        if _PRIVATE_HOST_RE.match(hostname):
+            log.warning(f"URL-Fetch blockiert (privater Host): {url}")
+            return None
+        ip = await asyncio.to_thread(socket.gethostbyname, hostname)
+        if _PRIVATE_HOST_RE.match(ip):
+            log.warning(f"URL-Fetch blockiert (private IP {ip}): {url}")
+            return None
+    except Exception:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=10),
+                max_redirects=5,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; Discord-Bot/1.0)"},
+            ) as resp:
+                ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if "text/html" not in ct:
+                    log.info(f"URL-Fetch übersprungen (kein HTML, {ct}): {url}")
+                    return None
+                raw = await resp.content.read(MAX_FETCH_BYTES)
+        text = _extract_main_text(raw.decode("utf-8", errors="replace"))
+        if text:
+            log.info(f"URL-Fetch: {len(text)} Zeichen extrahiert aus {url}")
+        return text
+    except Exception as e:
+        log.warning(f"URL-Fetch fehlgeschlagen ({url}): {e}")
+        return None
+
 
 async def classify_intent(text: str) -> tuple[str, str]:
     response = await asyncio.to_thread(
@@ -1137,6 +1212,9 @@ async def on_message(message: discord.Message):
 
         # ── SNAPSHOT ──────────────────────────────────────────────────────────
         if intent == "SNAPSHOT":
+            if not privileged:
+                await message.reply("Das dürfen nur Admins und Mods.")
+                return
             async with message.channel.typing():
                 since = datetime.now(timezone.utc) - timedelta(hours=24)
                 lines = []
@@ -1197,8 +1275,29 @@ async def on_message(message: discord.Message):
             return
 
         # ── RESPOND ───────────────────────────────────────────────────────────
+        # Fetch content for any web URLs in the message (not YouTube/images)
+        webpage_urls = [
+            u for u in _URL_RE.findall(clean)
+            if not _YT_URL_RE.search(u) and not IMAGE_URL_RE.search(u)
+        ][:MAX_URLS_PER_MSG]
+        url_context = ""
+        if webpage_urls:
+            fetched = []
+            for u in webpage_urls:
+                text = await fetch_webpage_text(u)
+                if text:
+                    fetched.append(f"[Inhalt von {u}]:\n{text}")
+            if fetched:
+                url_context = "\n\n" + "\n\n".join(fetched)
+
         async with message.channel.typing():
-            reply = await ask_claude(clean, message.author.display_name, image_blocks, channel_id=message.channel.id, before_id=message.id)
+            reply = await ask_claude(
+                clean + url_context,
+                message.author.display_name,
+                image_blocks,
+                channel_id=message.channel.id,
+                before_id=message.id,
+            )
         await message.reply(reply)
         return
 
