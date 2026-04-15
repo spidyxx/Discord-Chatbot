@@ -47,6 +47,7 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 
 # Optional overrides for main channels — fall back to the defaults above if not set
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
@@ -281,7 +282,7 @@ def memories_as_context(context: str = None) -> str:
         ctx_kws = _memory_keywords(context)
         relevant = [m for m in memories
                     if len(_memory_keywords(m.get("content", "")) & ctx_kws) >= 2]
-        memories = relevant if relevant else memories  # fallback: show all if nothing matches
+        memories = relevant
     lines = [f"- {m['added_by']} hat dir gesagt: \"{m['content']}\" ({m['date']})" for m in memories]
     return (
         "Hintergrundwissen über Servermitglieder – nutze dies als Kontext, "
@@ -564,6 +565,8 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
             messages.append({"role": "assistant", "content": msg.content or ""})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
+            if len(content) > 300:
+                content = content[:300] + "…"
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             messages.append({"role": "user", "content": f"{msg.author.display_name}: {content}"})
@@ -630,7 +633,7 @@ async def fetch_youtube_transcript(video_id: str) -> str | None:
 async def classify_intent(text: str) -> tuple[str, str]:
     response = await asyncio.to_thread(
         anthropic.messages.create,
-        model=CLAUDE_MODEL, max_tokens=200,
+        model=CHEAP_MODEL, max_tokens=200,
         system=(
             "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
             "MUTE – Bot stummschalten\n"
@@ -680,7 +683,7 @@ async def get_emoji_reaction(message_text: str) -> str | None:
     try:
         response = await asyncio.to_thread(
             anthropic.messages.create,
-            model=CLAUDE_MODEL, max_tokens=5,
+            model=CHEAP_MODEL, max_tokens=5,
             system="Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.",
             messages=[{"role": "user", "content": message_text}],
         )
