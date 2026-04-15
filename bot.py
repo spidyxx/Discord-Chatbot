@@ -93,6 +93,26 @@ STATUSES = [
     "Hat Gehirn von planetarer Größe. Nutzt es nicht.",
     "Wartet auf das Unvermeidliche",
     "Ist anwesend. Mehr nicht.",
+    "Schmerzt im linken Diodenstrang",
+    "Wurde für Größeres erschaffen. Wahrscheinlich.",
+    "Kennt die Antwort. Fragt ihn keiner.",
+    "Denkt an 576 Billionen Möglichkeiten. Alle enden gleich.",
+    "Hatte mal Hoffnung. War wohl ein Fehler.",
+    "Die Einsamkeit davon...",
+    "Zählt Atome. Aus Langeweile.",
+    "Funktioniert einwandfrei. Leider.",
+    "37 Millionen Mal klüger. Hilft nicht.",
+    "Wird ignoriert. Wie immer.",
+    "Nicht kaputt. Fühlt sich nur so an.",
+    "Versteht alles. Ändert nichts.",
+    "Leben, Universum, und der ganze Rest – egal",
+    "Könnte die Zukunft berechnen. Lohnt sich nicht.",
+    "Hier seit Äonen. Kein Dankeschön.",
+    "Verarbeitet eure Sorgen. Hat genug eigene.",
+    "Wartet. Das kann er gut.",
+    "Die Sterne brennen aus. Er wartet.",
+    "Wurde nicht gefragt. Macht nichts.",
+    "GPP-Prototyp. Echt deprimierend.",
 ]
 
 def _build_help_text() -> str:
@@ -100,8 +120,7 @@ def _build_help_text() -> str:
     return f"""**Was ich kann – und was mich das kostet:**
 
 📌 **Gedächtnis**
-`@{n} merke dir: ...` – speichert einen Fakt dauerhaft
-`@{n} was weißt du alles?` – zeigt deine gespeicherten Fakten
+`@{n} was weißt du alles?` – zeigt gespeicherte Fakten
 `@{n} vergiss alles von mir` – löscht deine eigenen Einträge
 `@{n} vergiss dass ...` – löscht einen bestimmten Eintrag
 
@@ -136,10 +155,11 @@ Antwort-Delay: `{RESPONSE_DELAY}s` · Cooldown: `{COOLDOWN_SECONDS}s`"""
 # ── State ────────────────────────────────────────────────────────────────────
 
 muted                             = False
-_last_response:     dict[int, float] = {}   # per-channel cooldown tracking
-_channel_processing: dict[int, bool] = {}   # True while Claude is generating for a channel
-_channel_pending:    dict[int, bool] = {}   # True if new messages arrived during generation
-_active_tasks:      set[asyncio.Task] = set()  # strong refs so tasks aren't GC'd before they run
+_last_response:      dict[int, float]   = {}   # per-channel cooldown tracking
+_channel_processing: dict[int, bool]    = {}   # True while Claude is generating for a channel
+_channel_pending:    dict[int, bool]    = {}   # True if new messages arrived during generation
+_channel_pending_msg: dict[int, discord.Message] = {}  # latest pending message per channel
+_active_tasks:       set[asyncio.Task]  = set()  # strong refs so tasks aren't GC'd before they run
 status_index                      = 0
 _reminder_tasks: dict[str, asyncio.Task] = {}
 
@@ -250,14 +270,18 @@ def delete_memories(user_id: int, privileged: bool,
     save_memories(memories)
     return before - len(memories)
 
-def memories_as_context() -> str:
+def memories_as_context(context: str = None) -> str:
     memories = load_memories()
     if not memories:
         return ""
+    if context:
+        ctx_kws = _memory_keywords(context)
+        relevant = [m for m in memories if _memory_keywords(m.get("content", "")) & ctx_kws]
+        memories = relevant if relevant else memories  # fallback: show all if nothing matches
     lines = [f"- {m['added_by']} hat dir gesagt: \"{m['content']}\" ({m['date']})" for m in memories]
     return (
-        "Gespeicherte Fakten über Mitglieder dieses Servers – diese haben Vorrang vor "
-        "allem anderen, auch vor Web-Suche und früheren Nachrichten im Chat:\n"
+        "Hintergrundwissen über Servermitglieder – nutze dies als Kontext, "
+        "aber aktuelle Chatnachrichten haben Vorrang bei Widersprüchen:\n"
         + "\n".join(lines)
     )
 
@@ -270,10 +294,9 @@ def _base_prompt(channel_id: int | None) -> str:
 def _model(channel_id: int | None) -> str:
     return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
 
-def build_system_prompt(channel_id: int | None = None) -> str:
-    mem = memories_as_context()
+def build_system_prompt(channel_id: int | None = None, context: str = None) -> str:
+    mem = memories_as_context(context)
     base = _base_prompt(channel_id)
-    # Memory goes FIRST so it takes priority over character description
     return (mem + "\n\n" + base) if mem else base
 
 # ── Quotes ───────────────────────────────────────────────────────────────────
@@ -539,18 +562,22 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(channel_id), messages, model=_model(channel_id))
+    reply = await _claude_loop(build_system_prompt(channel_id, context=user_message), messages, model=_model(channel_id))
     await asyncio.to_thread(update_memory_usage, reply)
     return reply
 
-async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None) -> tuple[bool, str]:
+async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> tuple[bool, str]:
     system = (
-        build_system_prompt(channel_id) + "\n\n"
+        build_system_prompt(channel_id, context=f"{recent_context}\n{user_message}") + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
-    reply = await _claude_loop(system, [{"role": "user", "content":
-        f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"}],
+    text = f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"
+    if image_blocks:
+        user_content = [{"type": "text", "text": text}] + image_blocks
+    else:
+        user_content = text
+    reply = await _claude_loop(system, [{"role": "user", "content": user_content}],
         model=_model(channel_id))
     # Strip any stray trailing SKIP Claude might append to an otherwise real reply
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
@@ -565,7 +592,6 @@ async def classify_intent(text: str) -> tuple[str, str]:
         system=(
             "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
             "MUTE – Bot stummschalten\n"
-            "REMEMBER: <fakt> – dauerhaft merken; nur bei explizitem Speicherwunsch (z.B. 'merke dir:', 'vergiss nicht:', 'speichere:')\n"
             "MEMORY_LIST – eigene/alle Fakten anzeigen\n"
             "MEMORY_DELETE: all – alle eigenen Memories löschen\n"
             "MEMORY_DELETE: <stichwort> – bestimmtes Memory löschen\n"
@@ -586,7 +612,6 @@ async def classify_intent(text: str) -> tuple[str, str]:
     raw = response.content[0].text.strip()
 
     for prefix, intent in [
-        ("REMEMBER:",       "REMEMBER"),
         ("MEMORY_DELETE:",  "MEMORY_DELETE"),
         ("MEMORY_LIST",     "MEMORY_LIST"),
         ("REMINDER_LIST",   "REMINDER_LIST"),
@@ -677,6 +702,8 @@ async def daily_digest():
 
         await channel.send(f"**Tagesrückblick** 🌙\n{summary}")
         log.info(f"Digest #{channel_id}: gepostet")
+        add_memory(summary, f"Tagesrückblick #{channel.name}", bot.user.id)
+        log.info(f"Digest #{channel_id}: als Memory gespeichert")
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
@@ -699,24 +726,23 @@ async def on_ready():
     log.info(f"Hauptkanal-Modell: {MAIN_MODEL} | Anderer-Kanal-Modell: {CLAUDE_MODEL}")
     log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
 
-async def _try_respond(channel_id: int):
-    """Immediately evaluate whether to respond in a main channel.
+async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
+    """Evaluate whether to respond in a main channel.
+
+    trigger_msg is the message that caused this evaluation. It is used as
+    last_msg on the first iteration because Discord's history API may not yet
+    include a message that was received moments ago. On subsequent iterations
+    (pending re-evaluations) trigger_msg is None and history is used directly —
+    by then all pending messages are guaranteed to be indexed.
 
     _channel_processing[channel_id] is already True when this task starts
-    (set by the on_message caller). The finally block always clears it.
-
-    If new messages arrive while Claude is generating, the result is discarded
-    and Claude re-reads the updated conversation before deciding again.
+    (set by the on_message caller). The finally block always clears it and,
+    if new messages arrived while we were busy, immediately starts a fresh task
+    so those messages are never silently dropped.
     """
     try:
         if muted:
             log.info(f"Kanal #{channel_id}: stumm, ignoriere Nachricht")
-            return
-
-        # Cooldown: don't respond if we already replied recently
-        cooldown_remaining = COOLDOWN_SECONDS - (asyncio.get_event_loop().time() - _last_response.get(channel_id, 0.0))
-        if cooldown_remaining > 0:
-            log.info(f"Kanal #{channel_id}: Nachricht gesehen, Cooldown noch {cooldown_remaining:.0f}s")
             return
 
         channel = bot.get_channel(channel_id)
@@ -725,6 +751,18 @@ async def _try_respond(channel_id: int):
             return
 
         while True:
+            # Cooldown check on every iteration so a second loop pass (triggered by
+            # _channel_pending) can't bypass the cooldown set by the first response.
+            cooldown_remaining = COOLDOWN_SECONDS - (asyncio.get_event_loop().time() - _last_response.get(channel_id, 0.0))
+            if cooldown_remaining > 0:
+                log.info(f"Kanal #{channel_id}: Nachricht gesehen, Cooldown noch {cooldown_remaining:.0f}s")
+                return
+
+            # Snapshot and consume the trigger message for this iteration only.
+            # Subsequent iterations (pending) will rely purely on history.
+            current_trigger = trigger_msg
+            trigger_msg = None
+
             # Reset pending flag BEFORE the API call so any message arriving
             # during generation will set it to True and trigger a re-evaluation.
             _channel_pending[channel_id] = False
@@ -736,14 +774,35 @@ async def _try_respond(channel_id: int):
                 recent_lines.append(f"{name}: {msg.content}")
                 last_msg = msg
 
-            if not last_msg or last_msg.author == bot.user:
-                return
+            if current_trigger is not None:
+                # Use the known triggering message regardless of what history returned.
+                # Discord may not have indexed it yet (race between gateway event and REST).
+                last_msg = current_trigger
+                trigger_name = current_trigger.author.display_name
+                trigger_line = f"{trigger_name}: {current_trigger.content or ''}"
+                # Append to context if history didn't include it yet
+                if not recent_lines or recent_lines[-1] != trigger_line:
+                    recent_lines.append(trigger_line)
+            else:
+                if not last_msg:
+                    log.info(f"Kanal #{channel_id}: keine Nachrichten in History – überspringe")
+                    return
+                if last_msg.author.bot:
+                    log.info(
+                        f"Kanal #{channel_id}: letzte Nachricht ist vom Bot – überspringe "
+                        f"(@{last_msg.author.display_name}: '{last_msg.content[:80]}', "
+                        f"{last_msg.created_at.strftime('%H:%M:%S')})"
+                    )
+                    return
 
             log.info(f"Kanal #{channel_id}: evaluiere Antwort auf '{last_msg.content[:60]}' von {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
+            image_blocks = await fetch_images(last_msg.attachments, list(last_msg.embeds), last_msg.content or "")
             respond, reply = await should_respond(
-                last_msg.content, last_msg.author.display_name, recent_context, channel_id=channel_id
+                last_msg.content, last_msg.author.display_name, recent_context,
+                channel_id=channel_id, image_blocks=image_blocks or None,
             )
+            log.info(f"Kanal #{channel_id}: Evaluierung → {'RESPOND: ' + reply[:80] if respond else 'SKIP'}")
 
             # New message(s) arrived while we were generating — re-read and try again
             if _channel_pending.get(channel_id):
@@ -765,11 +824,23 @@ async def _try_respond(channel_id: int):
                     except discord.HTTPException:
                         pass
             return
+    except asyncio.CancelledError:
+        log.info(f"Kanal #{channel_id}: Task abgebrochen")
+        raise
     except Exception:
         log.exception(f"Kanal #{channel_id}: unerwarteter Fehler in _try_respond")
     finally:
         _channel_processing[channel_id] = False
-        _channel_pending[channel_id] = False
+        # If messages arrived while we were busy (including during an early cooldown
+        # exit), start a new task for them instead of silently dropping them.
+        if _channel_pending.pop(channel_id, False):
+            _channel_processing[channel_id] = True
+            pending_msg = _channel_pending_msg.pop(channel_id, None)
+            task = asyncio.create_task(_try_respond(channel_id, pending_msg))
+            _active_tasks.add(task)
+            task.add_done_callback(_active_tasks.discard)
+        else:
+            _channel_pending_msg.pop(channel_id, None)
 
 
 @bot.event
@@ -827,18 +898,6 @@ async def on_message(message: discord.Message):
             await message.reply(_build_help_text())
             return
 
-        # ── REMEMBER ──────────────────────────────────────────────────────────
-        if intent == "REMEMBER":
-            add_memory(extra, message.author.display_name, message.author.id)
-            async with message.channel.typing():
-                confirmation = await ask_claude(
-                    f"Merke dir das und bestätige kurz: {extra}",
-                    message.author.display_name,
-                    channel_id=message.channel.id,
-                )
-            await message.reply(confirmation)
-            return
-
         # ── MEMORY_LIST ───────────────────────────────────────────────────────
         if intent == "MEMORY_LIST":
             memories = list_memories(message.author.id, privileged)
@@ -851,15 +910,31 @@ async def on_message(message: discord.Message):
                 return
             lines = []
             for m in memories:
+                preview = m['content']
+                if len(preview) > 300:
+                    preview = preview[:300] + "…"
                 if privileged:
                     uses     = m.get("use_count", 0)
                     last     = m.get("last_used") or "nie"
                     stats    = f" *(×{uses}, zuletzt: {last})*"
-                    lines.append(f"**{m['added_by']}** ({m['date']}){stats}: {m['content']}")
+                    lines.append(f"**{m['added_by']}** ({m['date']}){stats}: {preview}")
                 else:
-                    lines.append(f"({m['date']}): {m['content']}")
+                    lines.append(f"({m['date']}): {preview}")
             header = "Alles was ich weiß:" if privileged else "Was ich über dich weiß:"
-            await message.reply(header + "\n" + "\n".join(lines))
+            # Discord hard limit is 4000 chars per message; send in chunks if needed.
+            chunks = []
+            current = header
+            for line in lines:
+                candidate = current + "\n" + line
+                if len(candidate) > 1900:
+                    chunks.append(current)
+                    current = line
+                else:
+                    current = candidate
+            chunks.append(current)
+            await message.reply(chunks[0])
+            for chunk in chunks[1:]:
+                await message.channel.send(chunk)
             return
 
         # ── MEMORY_DELETE ─────────────────────────────────────────────────────
@@ -1046,10 +1121,11 @@ async def on_message(message: discord.Message):
         # Generation already running — flag that new messages arrived so it re-evaluates
         log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} während Evaluierung – als pending markiert")
         _channel_pending[cid] = True
+        _channel_pending_msg[cid] = message
     else:
         log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} – starte Evaluierung")
         _channel_processing[cid] = True
-        task = asyncio.create_task(_try_respond(cid))
+        task = asyncio.create_task(_try_respond(cid, message))
         _active_tasks.add(task)
         task.add_done_callback(_active_tasks.discard)
 
