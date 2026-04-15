@@ -224,10 +224,11 @@ _STOPWORDS = {
 }
 
 def _memory_keywords(text: str) -> set[str]:
-    """Extract significant words (≥4 chars, not stopwords) from a memory entry."""
+    """Extract significant words (≥4 chars, not stopwords, not the bot's own name) from a text."""
+    bot_name_lower = BOT_NAME.lower()
     return {
         w.lower() for w in re.findall(r"[A-Za-zÄäÖöÜüß]{4,}", text)
-        if w.lower() not in _STOPWORDS
+        if w.lower() not in _STOPWORDS and w.lower() != bot_name_lower
     }
 
 def update_memory_usage(reply: str):
@@ -279,7 +280,8 @@ def memories_as_context(context: str = None) -> str:
         return ""
     if context:
         ctx_kws = _memory_keywords(context)
-        relevant = [m for m in memories if _memory_keywords(m.get("content", "")) & ctx_kws]
+        relevant = [m for m in memories
+                    if len(_memory_keywords(m.get("content", "")) & ctx_kws) >= 2]
         memories = relevant if relevant else memories  # fallback: show all if nothing matches
     lines = [f"- {m['added_by']} hat dir gesagt: \"{m['content']}\" ({m['date']})" for m in memories]
     return (
