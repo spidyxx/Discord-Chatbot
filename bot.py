@@ -519,11 +519,20 @@ TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
 async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, model: str = None) -> str:
     _model = model or CLAUDE_MODEL
+    # Cache the system prompt (tools render before system, so this breakpoint covers both).
+    # The system prompt is stable across all turns on the same channel → consistent cache hits.
+    cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     while True:
         response = await asyncio.to_thread(
             anthropic.messages.create,
             model=_model, max_tokens=max_tokens,
-            system=system, tools=TOOLS, messages=messages,
+            system=cached_system, tools=TOOLS, messages=messages,
+        )
+        u = response.usage
+        log.debug(
+            f"Cache: write={u.cache_creation_input_tokens} "
+            f"read={u.cache_read_input_tokens} "
+            f"uncached={u.input_tokens}"
         )
         if response.stop_reason != "tool_use":
             break
@@ -562,6 +571,13 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None) -> str:
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
+    # Cache the historical context prefix. The last fetched message marks the boundary —
+    # everything before it is the same on the next turn, so the API can serve it from cache.
+    if messages:
+        last = messages[-1]
+        hist_content = last["content"]
+        if isinstance(hist_content, str):
+            messages[-1] = {**last, "content": [{"type": "text", "text": hist_content, "cache_control": {"type": "ephemeral"}}]}
     content: list = [{"type": "text", "text": f"{username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
