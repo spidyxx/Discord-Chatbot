@@ -40,10 +40,9 @@ DISCORD_TOKEN       = os.environ["DISCORD_TOKEN"]
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 BOT_NAME            = os.environ.get("BOT_NAME", "Marvin")
 SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
-    f"Du bist {BOT_NAME}, ein echtes Mitglied dieses Discord-Servers. "
-    "Du schreibst locker, manchmal sarkastisch, und reagierst wie ein normaler Mensch. "
-    "Kurze Antworten, kein Bullet-Point-Gelaber, kein AI-Gerede. "
-    "Du weißt nicht, dass du ein Bot bist."
+    f"Du bist {BOT_NAME}, ein hilfreicher Assistent auf diesem Discord-Server. "
+    "Antworte präzise, sachlich und klar. Keine unnötigen Füllwörter, kein Slang. "
+    "Kurze Antworten, kein Bullet-Point-Gelaber."
 )
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
