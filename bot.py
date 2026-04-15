@@ -12,8 +12,8 @@ from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import io
-import html as _html
 import socket
+import trafilatura
 from urllib.parse import urlparse
 import aiohttp
 import discord
@@ -25,7 +25,8 @@ from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFoun
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-LOG_DIR = Path(os.environ.get("LOG_DIR", "/app/logs"))
+LOG_DIR   = Path(os.environ.get("LOG_DIR", "/app/logs"))
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 _fmt     = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 _console = logging.StreamHandler()
@@ -34,7 +35,7 @@ _file    = logging.handlers.TimedRotatingFileHandler(
     LOG_DIR / "bot.log", when="midnight", interval=1, backupCount=30, encoding="utf-8"
 )
 _file.setFormatter(_fmt)
-logging.basicConfig(level=logging.INFO, handlers=[_console, _file])
+logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO), handlers=[_console, _file])
 log = logging.getLogger(__name__)
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -578,7 +579,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
             messages.append({"role": "user", "content": f"{msg.author.display_name}: {content}"})
     return messages
 
-async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None) -> str:
+async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
     # Cache the historical context prefix. The last fetched message marks the boundary —
     # everything before it is the same on the next turn, so the API can serve it from cache.
@@ -591,7 +592,7 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(channel_id, context=user_message), messages, model=_model(channel_id))
+    reply = await _claude_loop(build_system_prompt(channel_id, context=memory_context or user_message), messages, model=_model(channel_id))
     await asyncio.to_thread(update_memory_usage, reply)
     return reply
 
@@ -641,34 +642,27 @@ async def fetch_youtube_transcript(video_id: str) -> str | None:
         log.warning(f"YouTube-Transkript konnte nicht geladen werden ({video_id}): {exc}")
         return None
 
-def _extract_main_text(raw_html: str) -> str | None:
-    """Strip boilerplate from HTML and return the main readable text."""
-    # Remove blocks that are never useful
-    for tag in ("script", "style", "nav", "header", "footer", "aside", "form", "noscript"):
-        raw_html = re.sub(rf'<{tag}[\s>].*?</{tag}>', '', raw_html, flags=re.DOTALL | re.IGNORECASE)
-    # Try to isolate the main content block
-    for pattern in (
-        r'<article[\s>].*?</article>',
-        r'<main[\s>].*?</main>',
-        r'<div[^>]+role=["\']main["\'][^>]*>.*?</div>',
-    ):
-        m = re.search(pattern, raw_html, re.DOTALL | re.IGNORECASE)
-        if m:
-            raw_html = m.group(0)
-            break
-    # Strip remaining tags, decode entities, collapse whitespace
-    text = re.sub(r'<[^>]+>', ' ', raw_html)
-    text = _html.unescape(text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    if not text:
-        return None
-    if len(text) > MAX_WEBPAGE_CHARS:
-        text = text[:MAX_WEBPAGE_CHARS] + " […]"
-    return text
+# IAB TCF v2 "accept all" consent cookie — accepted by most German CMP implementations
+# (Usercentrics, Consentmanager, OneTrust) when sent in the initial request
+_CONSENT_COOKIE = (
+    "euconsent-v2=CPwsGQAPwsGQAAHABBENDMCsAP_AAH_AAAqIHutf_X__b39n-_59__t0eY1f9_7_v-0zjhfdt-8N2f_X_L8X42M7vF36tq4KuR4Eu3bBIQdlHOHcTUmw6okVrTPsak2Mr7NKJ7LkmlMbM25UIdAImZhskqKAAAAA; "
+    "CONSENT=YES+cb; cookieconsent_status=allow; cookie_consent=1"
+)
+_FETCH_HEADERS_PLAIN = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+}
+_FETCH_HEADERS_CONSENT = {**_FETCH_HEADERS_PLAIN, "Cookie": _CONSENT_COOKIE}
 
 
 async def fetch_webpage_text(url: str) -> str | None:
-    """Fetch a web page and return its extracted main text, or None on failure."""
+    """Fetch a web page and return its extracted main text, or None on failure.
+
+    Attempts the request twice: once without cookies, and if the content looks
+    like a consent wall (too short), again with IAB TCF v2 consent cookies.
+    Uses trafilatura for extraction — handles encoding and boilerplate removal.
+    """
     if _YT_URL_RE.search(url) or IMAGE_URL_RE.search(url):
         return None  # Already handled elsewhere
     # SSRF guard — reject private/loopback hosts before and after DNS resolution
@@ -683,22 +677,49 @@ async def fetch_webpage_text(url: str) -> str | None:
             return None
     except Exception:
         return None
+
+    async def _fetch_raw(headers: dict) -> bytes | None:
+        async with session.get(
+            url,
+            timeout=aiohttp.ClientTimeout(total=10),
+            max_redirects=5,
+            headers=headers,
+        ) as resp:
+            ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+            if "text/html" not in ct:
+                log.info(f"URL-Fetch übersprungen (kein HTML, {ct}): {url}")
+                return None
+            return await resp.content.read(MAX_FETCH_BYTES)
+
+    def _extract(raw: bytes) -> str | None:
+        text = trafilatura.extract(
+            raw,
+            include_comments=False,
+            include_tables=False,
+            no_fallback=False,
+        )
+        if not text:
+            return None
+        if len(text) > MAX_WEBPAGE_CHARS:
+            text = text[:MAX_WEBPAGE_CHARS] + " […]"
+        return text
+
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url,
-                timeout=aiohttp.ClientTimeout(total=10),
-                max_redirects=5,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; Discord-Bot/1.0)"},
-            ) as resp:
-                ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-                if "text/html" not in ct:
-                    log.info(f"URL-Fetch übersprungen (kein HTML, {ct}): {url}")
-                    return None
-                raw = await resp.content.read(MAX_FETCH_BYTES)
-        text = _extract_main_text(raw.decode("utf-8", errors="replace"))
+            raw = await _fetch_raw(_FETCH_HEADERS_PLAIN)
+            if raw is None:
+                return None
+            text = await asyncio.to_thread(_extract, raw)
+            # Short/empty result likely means a consent wall — retry with cookies
+            if not text or len(text) < 300:
+                log.info(f"URL-Fetch: Inhalt zu kurz ({len(text or '')}\u00a0Zeichen), Wiederholung mit Consent-Cookies: {url}")
+                raw2 = await _fetch_raw(_FETCH_HEADERS_CONSENT)
+                if raw2:
+                    text = await asyncio.to_thread(_extract, raw2)
         if text:
             log.info(f"URL-Fetch: {len(text)} Zeichen extrahiert aus {url}")
+        else:
+            log.info(f"URL-Fetch: kein Artikeltext extrahiert aus {url}")
         return text
     except Exception as e:
         log.warning(f"URL-Fetch fehlgeschlagen ({url}): {e}")
@@ -1279,7 +1300,25 @@ async def on_message(message: discord.Message):
         webpage_urls = [
             u for u in _URL_RE.findall(clean)
             if not _YT_URL_RE.search(u) and not IMAGE_URL_RE.search(u)
-        ][:MAX_URLS_PER_MSG]
+        ]
+        # Fallback: if no URL in current message, check replied-to message then
+        # recent channel history (last 5 msgs) — user may refer to a link posted earlier
+        if not webpage_urls:
+            candidates: list[str] = []
+            if message.reference and message.reference.resolved:
+                candidates.extend(_URL_RE.findall(message.reference.resolved.content or ""))
+            if not candidates:
+                async for hist in message.channel.history(limit=5, before=message):
+                    if hist.author == bot.user:
+                        continue
+                    candidates.extend(_URL_RE.findall(hist.content or ""))
+                    if candidates:
+                        break
+            webpage_urls = [
+                u for u in candidates
+                if not _YT_URL_RE.search(u) and not IMAGE_URL_RE.search(u)
+            ]
+        webpage_urls = webpage_urls[:MAX_URLS_PER_MSG]
         url_context = ""
         if webpage_urls:
             fetched = []
@@ -1297,6 +1336,7 @@ async def on_message(message: discord.Message):
                 image_blocks,
                 channel_id=message.channel.id,
                 before_id=message.id,
+                memory_context=clean,  # don't let fetched page content pollute memory keyword matching
             )
         await message.reply(reply)
         return

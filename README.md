@@ -86,6 +86,7 @@ All configuration is via environment variables.
 |---|---|---|
 | `DATA_DIR` | `/app/data` | Directory for persistent data (memories, quotes, reminders) |
 | `LOG_DIR` | `/app/logs` | Directory for log files (rotated daily, 30-day retention) |
+| `LOG_LEVEL` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
 ## Commands
 
