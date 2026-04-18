@@ -250,24 +250,6 @@ def _memory_keywords(text: str) -> set[str]:
         if w.lower() not in _STOPWORDS and w.lower() != bot_name_lower
     }
 
-def update_memory_usage(reply: str):
-    """Increment use_count on memories whose keywords appear in Claude's reply."""
-    if not reply:
-        return
-    memories = load_memories()
-    if not memories:
-        return
-    reply_lower = reply.lower()
-    now_str  = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
-    changed  = False
-    for m in memories:
-        kws = _memory_keywords(m.get("content", ""))
-        if kws and any(kw in reply_lower for kw in kws):
-            m["use_count"] = m.get("use_count", 0) + 1
-            m["last_used"] = now_str
-            changed = True
-    if changed:
-        save_memories(memories)
 
 def list_memories() -> list:
     return load_memories()
@@ -299,13 +281,15 @@ def _user_referenced(memory: dict, context_lower: str) -> bool:
     return any(ident.lower() in context_lower for ident in identifiers if len(ident) >= 3)
 
 
-def memories_as_context(full_context: str = "", message_context: str = "") -> str:
+def memories_as_context(full_context: str = "", message_context: str = "",
+                        track_usage: bool = False) -> str:
     """Inject relevant memories into the system prompt.
 
     full_context    — full conversation history + current message; used to detect
                       which users are present and whether bot-fact triggers fire.
     message_context — current user message only; used for general/legacy keyword
                       matching to avoid false positives from long history text.
+    track_usage     — if True, increment use_count on every injected entry.
     """
     memories = load_memories()
     if not memories:
@@ -347,6 +331,20 @@ def memories_as_context(full_context: str = "", message_context: str = "") -> st
             # Using full history causes large old blobs to match nearly always.
             if not msg_kws or len(_memory_keywords(m.get("content", "")) & msg_kws) >= 2:
                 general_facts.append(m)
+
+    selected = bot_facts + user_facts + general_facts
+
+    if track_usage and selected:
+        selected_ids = {m["id"] for m in selected if m.get("id")}
+        now_str = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
+        changed = False
+        for m in memories:
+            if m.get("id") in selected_ids:
+                m["use_count"] = m.get("use_count", 0) + 1
+                m["last_used"] = now_str
+                changed = True
+        if changed:
+            save_memories(memories)
 
     sections = []
 
@@ -397,8 +395,9 @@ def _model(channel_id: int | None) -> str:
 
 def build_system_prompt(channel_id: int | None = None,
                         full_context: str = "",
-                        message_context: str = "") -> str:
-    mem = memories_as_context(full_context, message_context) if _is_main(channel_id) else ""
+                        message_context: str = "",
+                        track_usage: bool = False) -> str:
+    mem = memories_as_context(full_context, message_context, track_usage=track_usage) if _is_main(channel_id) else ""
     base = _base_prompt(channel_id)
     return (mem + "\n\n" + base) if mem else base
 
@@ -791,10 +790,9 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
-        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message),
+        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message, track_usage=_is_main(channel_id)),
         messages, model=_model(channel_id)
     )
-    await asyncio.to_thread(update_memory_usage, reply)
     return reply
 
 def _parse_snapshot_facts(text: str) -> list[dict]:
