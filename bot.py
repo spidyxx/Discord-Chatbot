@@ -23,6 +23,7 @@ from discord.ext import commands, tasks
 from anthropic import Anthropic
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound
+from plugins.registry import registry as plugin_registry, discover as _discover_plugins
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,9 @@ anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+# ── Plugin discovery ──────────────────────────────────────────────────────────
+_discover_plugins()
 
 # ── Permissions ───────────────────────────────────────────────────────────────
 
@@ -953,46 +957,52 @@ async def fetch_webpage_text(url: str) -> str | None:
         return None
 
 
+_CLASSIFY_PREAMBLE = (
+    "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
+    "MUTE – Bot stummschalten\n"
+    "MEMORY_LIST – gespeicherte Fakten anzeigen (nur Admins/Mods)\n"
+    "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n"
+    "REMINDER_LIST – eigene Erinnerungen anzeigen\n"
+    "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n"
+    "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
+    "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n"
+    "YOUTUBE_SUMMARY: <url> – Nutzer möchte ein YouTube-Video zusammengefasst haben (URL im Format youtube.com/watch?v=... oder youtu.be/...)\n"
+    "SUMMARY – Nutzer fragt was passiert ist, was er verpasst hat, was es Neues gibt, oder möchte eine Zusammenfassung des Chats (z.B. 'was hab ich verpasst', 'was gab's heute', 'was ist hier los', 'fass zusammen')\n"
+    "SNAPSHOT – Nutzer möchte die Persönlichkeit, Witze, Dynamiken und Ereignisse der letzten 24h als Memory speichern (z.B. 'speichere was heute passiert ist', 'merk dir die heutige Session', 'snapshot')\n"
+    # QUOTE_SAVE and QUOTE_GET removed — now provided by plugins/core/quotes.py
+)
+
+_CLASSIFY_FOOTER = (
+    "HELP – Nutzer fragt was der Bot kann\n"
+    "RESPOND – alles andere\n\n"
+)
+
 async def classify_intent(text: str) -> tuple[str, str]:
+    plugin_lines = "".join(plugin_registry.intent_lines())
+    footer = _CLASSIFY_FOOTER + f"Aktuelle lokale Zeit ({TIMEZONE}): {datetime.now(TZ).strftime('%A %d.%m.%Y %H:%M')}"
+    system = _CLASSIFY_PREAMBLE + plugin_lines + footer
+
     response = await asyncio.to_thread(
         anthropic.messages.create,
         model=CHEAP_MODEL, max_tokens=200,
-        system=(
-            "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
-            "MUTE – Bot stummschalten\n"
-            "MEMORY_LIST – gespeicherte Fakten anzeigen (nur Admins/Mods)\n"
-            "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n"
-            "REMINDER_LIST – eigene Erinnerungen anzeigen\n"
-            "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n"
-            "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
-            "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n"
-            "YOUTUBE_SUMMARY: <url> – Nutzer möchte ein YouTube-Video zusammengefasst haben (URL im Format youtube.com/watch?v=... oder youtu.be/...)\n"
-            "SUMMARY – Nutzer fragt was passiert ist, was er verpasst hat, was es Neues gibt, oder möchte eine Zusammenfassung des Chats (z.B. 'was hab ich verpasst', 'was gab's heute', 'was ist hier los', 'fass zusammen')\n"
-            "SNAPSHOT – Nutzer möchte die Persönlichkeit, Witze, Dynamiken und Ereignisse der letzten 24h als Memory speichern (z.B. 'speichere was heute passiert ist', 'merk dir die heutige Session', 'snapshot')\n"
-            "QUOTE_SAVE – Nutzer antwortet explizit auf eine fremde Nachricht und möchte GENAU DIESE Nachricht als Zitat speichern (z.B. 'merke dieses Zitat', 'speicher das als Zitat') – NICHT wenn jemand selbst einen Text vorschlägt oder in Anführungszeichen zitiert\n"
-            "QUOTE_GET – zufälliges Zitat abrufen\n"
-            "HELP – Nutzer fragt was der Bot kann\n"
-            "RESPOND – alles andere\n\n"
-            f"Aktuelle lokale Zeit ({TIMEZONE}): {datetime.now(TZ).strftime('%A %d.%m.%Y %H:%M')}"
-        ),
+        system=system,
         messages=[{"role": "user", "content": text}],
     )
     raw = response.content[0].text.strip()
 
-    for prefix, intent in [
-        ("MEMORY_DELETE:",  "MEMORY_DELETE"),
-        ("MEMORY_LIST",     "MEMORY_LIST"),
-        ("REMINDER_LIST",   "REMINDER_LIST"),
-        ("REMINDER_DELETE:","REMINDER_DELETE"),
-        ("REMINDER:",       "REMINDER"),
+    static_prefixes = [
+        ("MEMORY_DELETE:",   "MEMORY_DELETE"),
+        ("MEMORY_LIST",      "MEMORY_LIST"),
+        ("REMINDER_LIST",    "REMINDER_LIST"),
+        ("REMINDER_DELETE:", "REMINDER_DELETE"),
+        ("REMINDER:",        "REMINDER"),
         ("YOUTUBE_SUMMARY:", "YOUTUBE_SUMMARY"),
-        ("SUMMARY",         "SUMMARY"),
-        ("SNAPSHOT",        "SNAPSHOT"),
-        ("QUOTE_SAVE",      "QUOTE_SAVE"),
-        ("QUOTE_GET",       "QUOTE_GET"),
-        ("HELP",            "HELP"),
-        ("MUTE",            "MUTE"),
-    ]:
+        ("SUMMARY",          "SUMMARY"),
+        ("SNAPSHOT",         "SNAPSHOT"),
+        ("HELP",             "HELP"),
+        ("MUTE",             "MUTE"),
+    ]
+    for prefix, intent in static_prefixes + plugin_registry.intent_prefixes():
         if raw.upper().startswith(prefix.upper()):
             extra = raw[len(prefix):].strip() if ":" in prefix else ""
             return intent, extra
@@ -1337,8 +1347,13 @@ async def on_message(message: discord.Message):
             if ref_content and _URL_RE.search(ref_content):
                 classify_text = f"{clean}\n[Benutzer antwortet auf: {ref_content[:300]}]"
 
-        intent, extra = await classify_intent(classify_text)
-        log.info(f"Intent von {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
+        _pre = plugin_registry.pre_classify(classify_text)
+        if _pre:
+            intent, extra = _pre
+            log.info(f"Intent von {message.author} ({'priv' if privileged else 'user'}) [pre]: {intent} | '{clean[:60]}'")
+        else:
+            intent, extra = await classify_intent(classify_text)
+            log.info(f"Intent von {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
 
         # ── MUTE ──────────────────────────────────────────────────────────────
         if intent == "MUTE":
@@ -1598,23 +1613,13 @@ async def on_message(message: discord.Message):
             await message.reply(f"Gespeichert. {len(parsed)} Einträge angelegt.")
             return
 
-        # ── QUOTE_SAVE ────────────────────────────────────────────────────────
-        if intent == "QUOTE_SAVE":
-            if message.reference and message.reference.resolved:
-                ref = message.reference.resolved
-                add_quote(ref.content, ref.author.display_name, message.author.display_name)
-                await message.reply(f'Gespeichert. "{ref.content[:80]}" – {ref.author.display_name}')
-            else:
-                await message.reply("Antworte auf die Nachricht die du speichern willst, dann ruf mich auf.")
-            return
-
-        # ── QUOTE_GET ─────────────────────────────────────────────────────────
-        if intent == "QUOTE_GET":
-            q = get_random_quote()
-            if not q:
-                await message.reply("Keine Zitate gespeichert.")
-            else:
-                await message.reply(f'"{q["content"]}"\n— {q["author"]}  *({q["date"]})*')
+        # ── Plugin dispatch ───────────────────────────────────────────────────
+        if plugin_registry.handles(intent):
+            from plugins.base import MessageContext
+            await plugin_registry.dispatch(MessageContext(
+                message=message, intent=intent, extra=extra,
+                privileged=privileged, classify_text=classify_text,
+            ))
             return
 
         # ── RESPOND ───────────────────────────────────────────────────────────
