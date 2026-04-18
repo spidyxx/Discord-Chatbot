@@ -111,3 +111,7 @@ for line in registry.intent_lines():
 ```
 
 Then test manually in Discord.
+
+## Dev Tools
+- Caveman skill active — Claude Code output is intentionally terse.
+  Check status with `/caveman status`. It should be set to full.

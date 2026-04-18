@@ -53,6 +53,11 @@ class Registry:
                 return result
         return None
 
+    async def on_ready(self) -> None:
+        """Call on_ready() on every plugin that overrides it."""
+        for plugin in self._plugins:
+            await plugin.on_ready()
+
     async def dispatch(self, ctx: MessageContext) -> bool:
         """Call the matching plugin. Returns True if handled."""
         plugin = self._intent_map.get(ctx.intent)

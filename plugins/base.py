@@ -42,6 +42,19 @@ class MessageContext:
     extra:         str        = ""       # classifier payload (e.g. reminder params)
     privileged:    bool       = False    # True if user is admin/mod (checked in on_message)
     classify_text: str        = ""       # text that was sent to classify_intent
+    # Claude access — set by bot.py dispatch; None when running standalone tests
+    ask_claude:         object = None    # Callable: _claude_loop(system, messages, max_tokens, model)
+    system_prompt:      str    = ""      # pre-built system prompt for this channel
+    model:              str    = ""      # model string for this channel
+    add_memory_fn:        object = None   # Callable: add_memory(fact, added_by, user_id, ...)
+    resolve_mentions_fn:  object = None  # Callable: resolve_mentions(content, mentions)
+    list_memories_fn:     object = None  # Callable: list_memories() -> list
+    delete_memories_fn:   object = None  # Callable: delete_memories(user_id, privileged, specific)
+    # RESPOND-specific fields
+    image_blocks:         object = None  # list of image content blocks (pre-fetched)
+    clean:                str    = ""    # cleaned message text (before URL context appended)
+    ask_full_fn:          object = None  # Callable: ask_claude(message, username, image_blocks, ...)
+    fetch_webpage_fn:     object = None  # Callable: fetch_webpage_text(url) -> str | None
 
 # ── Plugin ABC ────────────────────────────────────────────────────────────────
 
@@ -54,6 +67,10 @@ class Plugin(ABC):
         """Optional deterministic pre-classification (runs before Haiku).
         Return (intent, extra) to bypass the LLM, or None to fall through."""
         return None
+
+    async def on_ready(self) -> None:
+        """Called once when the bot is ready. Override to restore state (e.g. tasks)."""
+        return
 
     @abstractmethod
     async def handle(self, ctx: MessageContext) -> None:
