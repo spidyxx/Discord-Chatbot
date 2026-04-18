@@ -1270,11 +1270,12 @@ async def on_message(message: discord.Message):
 
     # Reaktivieren
     if muted:
-        if is_mention:
-            muted = False
-            await bot.change_presence(activity=discord.CustomActivity(name=STATUSES[status_index % len(STATUSES)]))
-            await message.reply("Bin wieder da.")
-        return
+        if not is_mention:
+            return
+        muted = False
+        await bot.change_presence(activity=discord.CustomActivity(name=STATUSES[status_index % len(STATUSES)]))
+        await message.channel.send("Bin wieder da.")
+        # fall through — process the message normally so the wakeup message is also answered
 
     if is_mention:
         # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
