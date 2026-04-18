@@ -87,6 +87,8 @@ DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "true").lower() == "true"
 DIGEST_HOUR    = int(os.environ.get("DIGEST_HOUR",   "23"))
 DIGEST_MINUTE  = int(os.environ.get("DIGEST_MINUTE", "0"))
 
+BOT_VERSION    = "1.0.1"
+
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
@@ -162,7 +164,9 @@ Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 
 ⚙️ **Bot-Konfiguration**
 Hauptkanal-Modell: `{MAIN_MODEL}` · Anderer-Kanal-Modell: `{CLAUDE_MODEL}`
-Cooldown: `{COOLDOWN_SECONDS}s`"""
+Cooldown: `{COOLDOWN_SECONDS}s`
+
+`v{BOT_VERSION}`"""
 
 # ── State ────────────────────────────────────────────────────────────────────
 
