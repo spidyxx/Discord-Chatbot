@@ -161,6 +161,11 @@ def _restore():
 class RemindersPlugin(Plugin):
     INTENTS = ["REMINDER", "REMINDER_LIST", "REMINDER_DELETE"]
 
+    INTENT_PREFIXES = {
+        "REMINDER":        "REMINDER:",
+        "REMINDER_DELETE": "REMINDER_DELETE:",
+    }
+
     INTENT_LINES = [
         "REMINDER_LIST – eigene Erinnerungen anzeigen\n",
         "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n",

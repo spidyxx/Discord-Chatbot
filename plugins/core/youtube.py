@@ -41,6 +41,8 @@ async def _fetch_transcript(video_id: str) -> str | None:
 class YoutubePlugin(Plugin):
     INTENTS = ["YOUTUBE_SUMMARY"]
 
+    INTENT_PREFIXES = {"YOUTUBE_SUMMARY": "YOUTUBE_SUMMARY:"}
+
     INTENT_LINES = [
         "YOUTUBE_SUMMARY: <url> – Nutzer möchte ein YouTube-Video zusammengefasst haben "
         "(URL im Format youtube.com/watch?v=... oder youtu.be/...)\n",

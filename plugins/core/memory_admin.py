@@ -10,6 +10,10 @@ _log = logging.getLogger(__name__)
 class MemoryAdminPlugin(Plugin):
     INTENTS = ["MEMORY_LIST", "MEMORY_DELETE"]
 
+    INTENT_PREFIXES = {
+        "MEMORY_DELETE": "MEMORY_DELETE:",
+    }
+
     INTENT_LINES = [
         "MEMORY_LIST – gespeicherte Fakten anzeigen (nur Admins/Mods)\n",
         "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n",

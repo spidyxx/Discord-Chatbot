@@ -42,7 +42,8 @@ class Registry:
         result = []
         for plugin in sorted(self._plugins, key=lambda p: p.intent_order):
             for label in plugin.INTENTS:
-                result.append((label, label))
+                prefix = plugin.INTENT_PREFIXES.get(label, label)
+                result.append((prefix, label))
         return result
 
     def pre_classify(self, clean: str) -> tuple[str, str] | None:

@@ -59,9 +59,12 @@ class MessageContext:
 # ── Plugin ABC ────────────────────────────────────────────────────────────────
 
 class Plugin(ABC):
-    INTENTS:      list[str] = []   # intent labels this plugin handles
-    INTENT_LINES: list[str] = []   # lines injected into the Haiku classifier prompt
-    intent_order: int       = 50   # lower = appears earlier in the injected prompt section
+    INTENTS:         list[str]       = []  # intent labels this plugin handles
+    INTENT_LINES:    list[str]       = []  # lines injected into the Haiku classifier prompt
+    INTENT_PREFIXES: dict[str, str]  = {}  # override prefix for classify_intent matching
+                                           # e.g. {"REMINDER": "REMINDER:"} for colon payloads
+                                           # defaults to {label: label} if not specified
+    intent_order: int = 50                 # lower = appears earlier in the injected prompt section
 
     def pre_classify(self, clean: str) -> tuple[str, str] | None:
         """Optional deterministic pre-classification (runs before Haiku).
