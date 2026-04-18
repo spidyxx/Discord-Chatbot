@@ -246,20 +246,23 @@ def _user_referenced(memory: dict, context_lower: str) -> bool:
 
 
 def memories_as_context(full_context: str = "", message_context: str = "",
-                        track_usage: bool = False) -> str:
+                        track_usage: bool = False, current_speaker: str = "") -> str:
     """Inject relevant memories into the system prompt.
 
-    full_context    — full conversation history + current message; used to detect
-                      which users are present and whether bot-fact triggers fire.
-    message_context — current user message only; used for general/legacy keyword
-                      matching to avoid false positives from long history text.
-    track_usage     — if True, increment use_count on every injected entry.
+    full_context     — full conversation history + current message; used for bot-fact
+                       trigger matching only.
+    message_context  — current user message only; used for general/legacy keyword
+                       matching and for detecting which non-speaker users are referenced.
+    track_usage      — if True, increment use_count on every injected entry.
+    current_speaker  — display_name of the user who sent the current message; their
+                       memories are always injected regardless of name appearance.
     """
     memories = load_memories()
     if not memories:
         return ""
 
     full_lower = full_context.lower()
+    msg_lower  = (message_context or "").lower()
     msg_kws    = _memory_keywords(message_context or full_context)
 
     # Build a unified alias map so identity is looked up once per subject,
@@ -271,9 +274,15 @@ def memories_as_context(full_context: str = "", message_context: str = "",
             alias_map.setdefault(subj, set())
             alias_map[subj].update(m.get("aliases") or [])
 
+    spk_lower = current_speaker.lower() if current_speaker else ""
+
     def _is_user_present(subject: str) -> bool:
         identifiers = {subject} | alias_map.get(subject, set())
-        return any(ident.lower() in full_lower for ident in identifiers if len(ident) >= 3)
+        # Always inject memories for the current speaker.
+        if spk_lower and any(ident.lower() == spk_lower for ident in identifiers if len(ident) >= 3):
+            return True
+        # For everyone else: only inject if explicitly mentioned in the current message.
+        return any(ident.lower() in msg_lower for ident in identifiers if len(ident) >= 3)
 
     bot_facts, user_facts, general_facts = [], [], []
     for m in memories:
@@ -360,8 +369,9 @@ def _model(channel_id: int | None) -> str:
 def build_system_prompt(channel_id: int | None = None,
                         full_context: str = "",
                         message_context: str = "",
-                        track_usage: bool = False) -> str:
-    mem = memories_as_context(full_context, message_context, track_usage=track_usage) if _is_main(channel_id) else ""
+                        track_usage: bool = False,
+                        current_speaker: str = "") -> str:
+    mem = memories_as_context(full_context, message_context, track_usage=track_usage, current_speaker=current_speaker) if _is_main(channel_id) else ""
     base = _base_prompt(channel_id)
     return (mem + "\n\n" + base) if mem else base
 
@@ -566,14 +576,14 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
-        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message, track_usage=_is_main(channel_id)),
+        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message, track_usage=_is_main(channel_id), current_speaker=username),
         messages, model=_model(channel_id)
     )
     return reply
 
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> tuple[bool, str]:
     system = (
-        build_system_prompt(channel_id, full_context=f"{recent_context}\n{user_message}", message_context=user_message) + "\n\n"
+        build_system_prompt(channel_id, full_context=f"{recent_context}\n{user_message}", message_context=user_message, current_speaker=username) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
