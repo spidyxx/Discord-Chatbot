@@ -1,4 +1,5 @@
 import os
+os.umask(0o002)  # files: 664, dirs: 775 — lets SMB users in the same group write files
 import asyncio
 import logging
 import logging.handlers
@@ -90,6 +91,7 @@ DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
 REMINDERS_FILE = DATA_DIR / "reminders.json"
 QUOTES_FILE    = DATA_DIR / "quotes.json"
+CDU_FILE       = DATA_DIR / "cdu_counter.json"
 
 STATUSES = [
     "Leidet still",
@@ -127,35 +129,36 @@ def _build_help_text() -> str:
 
 💬 **Allgemein** *(alle Kanäle)*
 Ich beantworte Fragen, suche im Web und erkenne Bilder – immer auf @Mention.
-In anderen Kanälen benutze ich nur den aktuellen Chatverlauf, keine gespeicherten Fakten.
-
-📌 **Gedächtnis** *(nur Hauptkanäle)*
-Gespeicherte Fakten werden nur in Hauptkanälen genutzt – in anderen Kanälen antworte ich ausschließlich auf Basis des Chatverlaufs.
-`@{n} was weißt du alles?` – zeigt gespeicherte Fakten
-`@{n} vergiss alles von mir` – löscht deine eigenen Einträge
-`@{n} vergiss dass ...` – löscht einen bestimmten Eintrag
-`@{n} speichere was heute passiert ist` – speichert Persönlichkeit, Witze & Dynamiken der letzten 24h als Memory
+In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergrundwissen.
 
 ⏰ **Erinnerungen** *(alle Kanäle)*
-`@{n} erinnere mich in 2 Stunden an ...` – einmalige Erinnerung
-`@{n} erinnere uns jeden Freitag um 20 Uhr an ...` – wiederkehrend
-`@{n} zeig meine Erinnerungen` – listet deine aktiven Erinnerungen
+`@{n} erinnere mich in 2 Stunden an Meeting` – einmalige Benachrichtigung
+`@{n} erzähl mir jeden Tag um 13 Uhr einen Witz` – wiederkehrende Aufgabe (ich generiere dann eine Antwort)
+`@{n} erinnere uns jeden Freitag um 20 Uhr an ...` – wiederkehrende Benachrichtigung
+`@{n} zeig meine Erinnerungen` – listet deine aktiven Erinnerungen (🤖 = Aufgabe, kein Text)
 `@{n} lösche Erinnerung [ID]` – löscht eine bestimmte Erinnerung
 
-💬 **Zitate** *(alle Kanäle)*
+🗨️ **Zitate** *(alle Kanäle)*
 Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 `@{n} zeig ein Zitat` – zufälliges gespeichertes Zitat
 
 📋 **Zusammenfassung** *(alle Kanäle)*
 `@{n} fass zusammen` – fasst die letzten Nachrichten zusammen
-`@{n} fass dieses Video zusammen <youtube-url>` – fasst ein YouTube-Video zusammen (nur wenn Untertitel verfügbar)
+`@{n} fass dieses Video zusammen <youtube-url>` – fasst ein YouTube-Video zusammen
 
 🔇 **Stummschalten** *(alle Kanäle)*
 `@{n} shut up` *(oder ähnliches)* – ich schweige
 `@{n}` *(irgendwas)* – reaktiviert mich wieder
 
-*In Hauptkanälen mische ich mich von selbst ein.*
-*Admins und Mods können alle Einträge anderer Nutzer einsehen und löschen.*
+💩 **CDU Scheiße Counter** *(alle Kanäle)*
+`@{n} CDU reset <Grund>` – Counter zurücksetzen mit Begründung
+`@{n} CDU` – aktuellen Stand anzeigen (Zeit seit letztem Reset)
+`@{n} CDU Protokoll` – vollständige Reset-Historie
+
+🔒 **Admins & Mods**
+`@{n} was weißt du alles?` – alle gespeicherten Fakten anzeigen
+`@{n} vergiss dass ...` – bestimmten Eintrag löschen
+`@{n} speichere was heute passiert ist` – Session als strukturierte Fakten speichern
 
 ⚙️ **Bot-Konfiguration**
 Hauptkanal-Modell: `{MAIN_MODEL}` · Anderer-Kanal-Modell: `{CLAUDE_MODEL}`
@@ -208,18 +211,27 @@ def _write(path: Path, data: list):
 def load_memories() -> list: return _read(MEMORY_FILE)
 def save_memories(m: list):  _write(MEMORY_FILE, m)
 
-def add_memory(fact: str, added_by: str, user_id: int):
+def add_memory(fact: str, added_by: str, user_id: int,
+               memory_type: str = "general",
+               subject: str = None,
+               aliases: list[str] = None,
+               trigger: str = None):
     m = load_memories()
     m.append({
-        "content":   fact,
-        "added_by":  added_by,
-        "user_id":   user_id,
-        "date":      datetime.now().strftime("%d.%m.%Y"),
+        "id":       str(uuid.uuid4())[:8],
+        "type":     memory_type,   # "bot" | "user" | "general"
+        "subject":  subject,       # primary name/username for user-type entries
+        "aliases":  aliases or [], # real names, nicknames, other identifiers
+        "trigger":  trigger,       # optional condition for bot-type entries
+        "content":  fact,
+        "added_by": added_by,
+        "user_id":  user_id,
+        "date":     datetime.now().strftime("%d.%m.%Y"),
         "use_count": 0,
         "last_used": None,
     })
     save_memories(m)
-    log.info(f"Memory gespeichert von {added_by}: {fact}")
+    log.info(f"Memory [{memory_type}] gespeichert von {added_by}: {fact[:80]}")
 
 # German + English stopwords — too common to be useful for usage detection
 _STOPWORDS = {
@@ -257,11 +269,8 @@ def update_memory_usage(reply: str):
     if changed:
         save_memories(memories)
 
-def list_memories(user_id: int, privileged: bool) -> list:
-    memories = load_memories()
-    if privileged:
-        return memories
-    return [m for m in memories if m.get("user_id") == user_id]
+def list_memories() -> list:
+    return load_memories()
 
 def delete_memories(user_id: int, privileged: bool,
                     specific: str = None, target_user_id: int = None) -> int:
@@ -281,20 +290,100 @@ def delete_memories(user_id: int, privileged: bool,
     save_memories(memories)
     return before - len(memories)
 
-def memories_as_context(context: str = None) -> str:
+def _user_referenced(memory: dict, context_lower: str) -> bool:
+    """True if this user-type memory's subject or any alias appears in the conversation text."""
+    identifiers = []
+    if memory.get("subject"):
+        identifiers.append(memory["subject"])
+    identifiers.extend(memory.get("aliases") or [])
+    return any(ident.lower() in context_lower for ident in identifiers if len(ident) >= 3)
+
+
+def memories_as_context(full_context: str = "", message_context: str = "") -> str:
+    """Inject relevant memories into the system prompt.
+
+    full_context    — full conversation history + current message; used to detect
+                      which users are present and whether bot-fact triggers fire.
+    message_context — current user message only; used for general/legacy keyword
+                      matching to avoid false positives from long history text.
+    """
     memories = load_memories()
     if not memories:
         return ""
-    if context:
-        ctx_kws = _memory_keywords(context)
-        relevant = [m for m in memories
-                    if len(_memory_keywords(m.get("content", "")) & ctx_kws) >= 2]
-        memories = relevant
-    lines = [f"- {m['added_by']} hat dir gesagt: \"{m['content']}\" ({m['date']})" for m in memories]
+
+    full_lower = full_context.lower()
+    msg_kws    = _memory_keywords(message_context or full_context)
+
+    # Build a unified alias map so identity is looked up once per subject,
+    # regardless of which entry carries the aliases field.
+    alias_map: dict[str, set[str]] = {}
+    for m in memories:
+        if m.get("type") == "user" and m.get("subject"):
+            subj = m["subject"]
+            alias_map.setdefault(subj, set())
+            alias_map[subj].update(m.get("aliases") or [])
+
+    def _is_user_present(subject: str) -> bool:
+        identifiers = {subject} | alias_map.get(subject, set())
+        return any(ident.lower() in full_lower for ident in identifiers if len(ident) >= 3)
+
+    bot_facts, user_facts, general_facts = [], [], []
+    for m in memories:
+        mtype = m.get("type", "general")
+        if mtype == "bot":
+            # No trigger → always inject. With trigger → only when trigger keywords
+            # appear in the conversation so we don't spam it on every message.
+            trigger = m.get("trigger")
+            if trigger:
+                trigger_kws = _memory_keywords(trigger)
+                if trigger_kws and not any(kw in full_lower for kw in trigger_kws):
+                    continue
+            bot_facts.append(m)
+        elif mtype == "user":
+            if m.get("subject") and _is_user_present(m["subject"]):
+                user_facts.append(m)
+        else:
+            # General / legacy blobs: match against current message keywords only.
+            # Using full history causes large old blobs to match nearly always.
+            if not msg_kws or len(_memory_keywords(m.get("content", "")) & msg_kws) >= 2:
+                general_facts.append(m)
+
+    sections = []
+
+    if bot_facts:
+        lines = []
+        for m in bot_facts:
+            line = f"- {m['content']}"
+            if m.get("trigger"):
+                line += f" [Kontext: {m['trigger']}]"
+            lines.append(line)
+        sections.append("Fakten über mich (den Bot):\n" + "\n".join(lines))
+
+    if user_facts:
+        # Group by subject; use the unified alias map for the header, not per-entry aliases
+        by_subject: dict[str, list] = {}
+        for m in user_facts:
+            subj = m.get("subject") or "Unbekannt"
+            by_subject.setdefault(subj, []).append(m)
+        lines = []
+        for subj, facts in by_subject.items():
+            aliases    = sorted(alias_map.get(subj, set()))
+            alias_str  = f" ({', '.join(aliases)})" if aliases else ""
+            facts_str  = "; ".join(f["content"] for f in facts)
+            lines.append(f"- {subj}{alias_str}: {facts_str}")
+        sections.append("Bekannte Nutzer im aktuellen Gespräch:\n" + "\n".join(lines))
+
+    if general_facts:
+        lines = [f"- {m['content']}" for m in general_facts]
+        sections.append("Weiteres Hintergrundwissen:\n" + "\n".join(lines))
+
+    if not sections:
+        return ""
+
     return (
-        "Hintergrundwissen über Servermitglieder – nutze dies als Kontext, "
-        "aber aktuelle Chatnachrichten haben Vorrang bei Widersprüchen:\n"
-        + "\n".join(lines)
+        "Hintergrundwissen – nutze dies als Kontext, "
+        "aber aktuelle Chatnachrichten haben Vorrang bei Widersprüchen:\n\n"
+        + "\n\n".join(sections)
     )
 
 def _is_main(channel_id: int | None) -> bool:
@@ -306,8 +395,10 @@ def _base_prompt(channel_id: int | None) -> str:
 def _model(channel_id: int | None) -> str:
     return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
 
-def build_system_prompt(channel_id: int | None = None, context: str = None) -> str:
-    mem = memories_as_context(context) if _is_main(channel_id) else ""
+def build_system_prompt(channel_id: int | None = None,
+                        full_context: str = "",
+                        message_context: str = "") -> str:
+    mem = memories_as_context(full_context, message_context) if _is_main(channel_id) else ""
     base = _base_prompt(channel_id)
     return (mem + "\n\n" + base) if mem else base
 
@@ -327,6 +418,67 @@ def get_random_quote() -> dict | None:
     q = load_quotes()
     return random.choice(q) if q else None
 
+# ── CDU Scheiße Counter ──────────────────────────────────────────────────────
+
+_CDU_RE         = re.compile(r'\bcdu\b', re.IGNORECASE)
+_CDU_RESET_RE   = re.compile(r'\b(reset|resettet|zurücksetzen|neustart|neu)\b', re.IGNORECASE)
+_CDU_HISTORY_RE = re.compile(r'\b(protokoll|verlauf|history|alle|liste)\b', re.IGNORECASE)
+
+
+def _fmt_hm(seconds: float) -> str:
+    s = int(seconds)
+    if s < 60:
+        return "weniger als 1 Minute"
+    if s < 3600:
+        return f"{s // 60} Minute(n)"
+    if s < 86400:
+        h, m = s // 3600, (s % 3600) // 60
+        return f"{h}h {m}min" if m else f"{h}h"
+    d, h = s // 86400, (s % 86400) // 3600
+    return f"{d}T {h}h" if h else f"{d} Tag(e)"
+
+
+def cdu_reset(reason: str) -> str:
+    entries = _read(CDU_FILE)
+    entries.append({"ts": datetime.now(timezone.utc).timestamp(), "reason": reason})
+    _write(CDU_FILE, entries)
+    total = len(entries)
+    return f"💩 **CDU Scheiße Counter resettet** (#{total})\nGrund: _{reason}_\nTimer läuft wieder."
+
+
+def cdu_status() -> str:
+    entries = _read(CDU_FILE)
+    if not entries:
+        return "💩 CDU Scheiße Counter wurde noch nie gestartet."
+    last    = entries[-1]
+    elapsed = datetime.now(timezone.utc).timestamp() - last["ts"]
+    started = datetime.fromtimestamp(last["ts"], tz=TZ).strftime("%d.%m.%Y %H:%M")
+    return (
+        f"💩 **CDU Scheiße Counter**\n"
+        f"Läuft seit: **{_fmt_hm(elapsed)}**\n"
+        f"Grund des letzten Resets: _{last['reason']}_\n"
+        f"Gestartet: {started}  |  Resets gesamt: {len(entries)}"
+    )
+
+
+def cdu_history() -> str:
+    entries = _read(CDU_FILE)
+    if not entries:
+        return "💩 Noch keine Resets aufgezeichnet."
+    now_ts = datetime.now(timezone.utc).timestamp()
+    lines  = [f"💩 **CDU Scheiße Counter – Protokoll** ({len(entries)} Resets)\n"]
+    for i, entry in enumerate(entries):
+        dt_str = datetime.fromtimestamp(entry["ts"], tz=TZ).strftime("%d.%m.%Y %H:%M")
+        if i + 1 < len(entries):
+            dur = _fmt_hm(entries[i + 1]["ts"] - entry["ts"])
+            dur_str = f"Dauer: {dur}"
+        else:
+            dur_str = f"noch laufend: {_fmt_hm(now_ts - entry['ts'])}"
+        lines.append(f"**[{i + 1}]** {dt_str} – {dur_str}")
+        lines.append(f"    _{entry['reason']}_")
+    return "\n".join(lines)
+
+
 # ── Reminders ────────────────────────────────────────────────────────────────
 
 def load_reminders() -> list: return _read(REMINDERS_FILE)
@@ -341,18 +493,47 @@ def fmt_duration(seconds: int) -> str:
 def fmt_ts(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=TZ).strftime("%d.%m.%Y %H:%M")
 
-async def fire_reminder(channel_id: int, user_id: int, message: str):
-    channel = bot.get_channel(channel_id)
-    if channel:
+async def _classify_reminder_mode(message: str) -> str:
+    """Return 'prompt' if the reminder is a task for Claude to perform,
+    'notify' if it's just a note to ping the user about."""
+    resp = await asyncio.to_thread(
+        anthropic.messages.create,
+        model=CHEAP_MODEL, max_tokens=10,
+        system=(
+            "Classify this reminder as PROMPT or NOTIFY.\n"
+            "PROMPT = the bot must generate a response (tell a joke, write a poem, ask a question, etc.)\n"
+            "NOTIFY = just remind the user about something (meeting, medication, task name, event, etc.)\n"
+            "Reply with exactly one word: PROMPT or NOTIFY"
+        ),
+        messages=[{"role": "user", "content": message}],
+    )
+    return "prompt" if resp.content[0].text.strip().upper().startswith("PROMPT") else "notify"
+
+
+async def fire_reminder(entry: dict):
+    channel = bot.get_channel(entry["channel_id"])
+    if not channel:
+        return
+    user_id = entry["user_id"]
+    message = entry["message"]
+    if entry.get("mode") == "prompt":
+        reply = await _claude_loop(
+            build_system_prompt(entry["channel_id"]),
+            [{"role": "user", "content": message}],
+            model=_model(entry["channel_id"]),
+        )
+        await channel.send(f"<@{user_id}> {reply}")
+        log.info(f"Prompt-Erinnerung ausgeführt für {user_id}: {message[:60]}")
+    else:
         await channel.send(f"<@{user_id}> Erinnerung: {message}")
-        log.info(f"Erinnerung gesendet an {user_id}: {message}")
+        log.info(f"Erinnerung gesendet an {user_id}: {message[:60]}")
 
 async def _reminder_task(entry: dict):
     while True:
         delay = entry["due_ts"] - datetime.now(timezone.utc).timestamp()
         if delay > 0:
             await asyncio.sleep(delay)
-        await fire_reminder(entry["channel_id"], entry["user_id"], entry["message"])
+        await fire_reminder(entry)
 
         if entry.get("interval_seconds"):
             entry["due_ts"] += entry["interval_seconds"]
@@ -369,13 +550,15 @@ async def _reminder_task(entry: dict):
             break
 
 def add_reminder(channel_id: int, user_id: int, username: str,
-                 message: str, seconds_until: int, interval_seconds: int = 0):
+                 message: str, seconds_until: int, interval_seconds: int = 0,
+                 mode: str = "notify"):
     entry = {
         "id":               str(uuid.uuid4())[:6],
         "channel_id":       channel_id,
         "user_id":          user_id,
         "username":         username,
         "message":          message,
+        "mode":             mode,   # "notify" | "prompt"
         "due_ts":           datetime.now(timezone.utc).timestamp() + seconds_until,
         "interval_seconds": interval_seconds,
     }
@@ -558,6 +741,15 @@ def resolve_mentions(content: str, mentions: list) -> str:
         content = content.replace(f"<@!{member.id}>", f"@{member.display_name}")
     return content
 
+def _msg_ts(msg_time: datetime) -> str:
+    """Format a message timestamp: [HH:MM] for today, [DD.MM HH:MM] for older."""
+    local = msg_time.astimezone(TZ)
+    today = datetime.now(TZ).date()
+    if local.date() == today:
+        return local.strftime("%H:%M")
+    return local.strftime("%d.%m %H:%M")
+
+
 async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     """Fetch recent channel messages as structured Claude conversation context."""
     channel = bot.get_channel(channel_id)
@@ -568,19 +760,24 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
         kwargs["before"] = discord.Object(id=before_id)
     messages = []
     async for msg in channel.history(**kwargs):
+        ts = _msg_ts(msg.created_at)
         if msg.author == bot.user:
-            messages.append({"role": "assistant", "content": msg.content or ""})
+            messages.append({"role": "assistant", "content": f"[{ts}] {msg.content or ''}"})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if len(content) > 300:
                 content = content[:300] + "…"
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
-            messages.append({"role": "user", "content": f"{msg.author.display_name}: {content}"})
+            messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
     return messages
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
+    # Build full conversation text for memory matching — user identification needs to
+    # look across the whole recent history, not just the current message.
+    hist_text = " ".join(m["content"] for m in messages if isinstance(m["content"], str))
+    full_memory_ctx = f"{hist_text} {memory_context or user_message}".strip()
     # Cache the historical context prefix. The last fetched message marks the boundary —
     # everything before it is the same on the next turn, so the API can serve it from cache.
     if messages:
@@ -588,17 +785,45 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         hist_content = last["content"]
         if isinstance(hist_content, str):
             messages[-1] = {**last, "content": [{"type": "text", "text": hist_content, "cache_control": {"type": "ephemeral"}}]}
-    content: list = [{"type": "text", "text": f"{username}: {user_message}"}]
+    now_ts = datetime.now(TZ).strftime("%H:%M")
+    content: list = [{"type": "text", "text": f"[{now_ts}] {username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
-    reply = await _claude_loop(build_system_prompt(channel_id, context=memory_context or user_message), messages, model=_model(channel_id))
+    reply = await _claude_loop(
+        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message),
+        messages, model=_model(channel_id)
+    )
     await asyncio.to_thread(update_memory_usage, reply)
     return reply
 
+def _parse_snapshot_facts(text: str) -> list[dict]:
+    """Parse Claude's structured SNAPSHOT output into a list of fact dicts."""
+    facts = []
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("|")]
+        ftype = parts[0].upper() if parts else ""
+        try:
+            if ftype == "BOT" and len(parts) >= 3:
+                trigger = parts[2] if parts[2].upper() not in ("NONE", "-", "") else None
+                facts.append({"type": "bot", "content": parts[1], "trigger": trigger})
+            elif ftype == "USER" and len(parts) >= 4:
+                aliases_raw = parts[2] if parts[2].upper() not in ("NONE", "-", "") else ""
+                aliases = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+                facts.append({"type": "user", "subject": parts[1], "aliases": aliases, "content": parts[3]})
+            elif ftype == "GENERAL" and len(parts) >= 2:
+                facts.append({"type": "general", "content": parts[1]})
+        except Exception:
+            continue
+    return facts
+
+
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> tuple[bool, str]:
     system = (
-        build_system_prompt(channel_id, context=f"{recent_context}\n{user_message}") + "\n\n"
+        build_system_prompt(channel_id, full_context=f"{recent_context}\n{user_message}", message_context=user_message) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
@@ -733,9 +958,8 @@ async def classify_intent(text: str) -> tuple[str, str]:
         system=(
             "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
             "MUTE – Bot stummschalten\n"
-            "MEMORY_LIST – eigene/alle Fakten anzeigen\n"
-            "MEMORY_DELETE: all – alle eigenen Memories löschen\n"
-            "MEMORY_DELETE: <stichwort> – bestimmtes Memory löschen\n"
+            "MEMORY_LIST – gespeicherte Fakten anzeigen (nur Admins/Mods)\n"
+            "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n"
             "REMINDER_LIST – eigene Erinnerungen anzeigen\n"
             "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n"
             "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
@@ -845,8 +1069,41 @@ async def daily_digest():
 
         await channel.send(f"**Tagesrückblick** 🌙\n{summary}")
         log.info(f"Digest #{channel_id}: gepostet")
-        add_memory(summary, f"Tagesrückblick #{channel.name}", bot.user.id)
-        log.info(f"Digest #{channel_id}: als Memory gespeichert")
+
+        # Extract structured atomic facts from the same chat log and store them
+        label    = f"Tagesrückblick #{channel.name}"
+        fact_resp = await asyncio.to_thread(
+            anthropic.messages.create,
+            model=CLAUDE_MODEL,
+            max_tokens=2000,
+            system=(
+                f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
+                "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
+                "BOT | <Fakt über den Bot selbst> | <Trigger/Kontext oder NONE>\n"
+                "USER | <Anzeigename wie im Chat> | <echte Namen und Spitznamen kommagetrennt oder NONE> | <Fakt>\n"
+                "GENERAL | <allgemeiner Fakt ohne klaren Nutzer- oder Bot-Bezug>\n\n"
+                "Regeln:\n"
+                "- Jede Zeile = genau eine Aussage. Keine Interpretationen, nur gesicherte Fakten.\n"
+                "- BOT: Spitznamen, Rollen, Besitztümer, Verhaltensregeln, Dynamiken.\n"
+                "- BOT-Trigger: Kontext in dem ein Fakt gilt (z.B. 'wenn BonusPizza schreibt'), sonst NONE.\n"
+                "- USER: Anzeigename exakt wie im Chat. Aliases = alle anderen bekannten Namen.\n"
+                "- Nur neue oder geänderte Fakten — keine bereits bekannten Dauerfakten wiederholen.\n"
+                "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
+            ),
+            messages=[{"role": "user", "content": "Chatverlauf:\n" + context}],
+        )
+        parsed = _parse_snapshot_facts(fact_resp.content[0].text.strip())
+        for fact_data in parsed:
+            add_memory(
+                fact        = fact_data["content"],
+                added_by    = label,
+                user_id     = bot.user.id,
+                memory_type = fact_data["type"],
+                subject     = fact_data.get("subject"),
+                aliases     = fact_data.get("aliases"),
+                trigger     = fact_data.get("trigger"),
+            )
+        log.info(f"Digest #{channel_id}: {len(parsed)} Fakten als Memory gespeichert")
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
@@ -915,15 +1172,17 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             recent_lines = []
             async for msg in channel.history(limit=10, oldest_first=True):
                 name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
-                recent_lines.append(f"{name}: {msg.content}")
+                ts   = _msg_ts(msg.created_at)
+                recent_lines.append(f"[{ts}] {name}: {msg.content}")
                 last_msg = msg
 
             if current_trigger is not None:
                 # Use the known triggering message regardless of what history returned.
                 # Discord may not have indexed it yet (race between gateway event and REST).
-                last_msg = current_trigger
-                trigger_name = current_trigger.author.display_name
-                trigger_line = f"{trigger_name}: {current_trigger.content or ''}"
+                last_msg      = current_trigger
+                trigger_name  = current_trigger.author.display_name
+                trigger_ts    = _msg_ts(current_trigger.created_at)
+                trigger_line  = f"[{trigger_ts}] {trigger_name}: {current_trigger.content or ''}"
                 # Append to context if history didn't include it yet
                 if not recent_lines or recent_lines[-1] != trigger_line:
                     recent_lines.append(trigger_line)
@@ -1038,10 +1297,41 @@ async def on_message(message: discord.Message):
         elif not clean:
             return
 
+        # ── CDU Scheiße Counter (pure Python, no API cost) ────────────────────
+        if _CDU_RE.search(clean):
+            if _CDU_RESET_RE.search(clean):
+                m       = _CDU_RESET_RE.search(clean)
+                reason  = clean[m.end():].strip().lstrip(",:;– ")
+                if not reason:
+                    await message.reply("Sag mir den Grund für den Reset.")
+                    return
+                await message.reply(cdu_reset(reason))
+            elif _CDU_HISTORY_RE.search(clean):
+                history_text = cdu_history()
+                # Send in chunks if too long for one message
+                if len(history_text) <= 1900:
+                    await message.reply(history_text)
+                else:
+                    chunks, current = [], ""
+                    for line in history_text.splitlines():
+                        if len(current) + len(line) + 1 > 1900:
+                            await message.reply(current)
+                            current = line
+                        else:
+                            current = (current + "\n" + line).strip()
+                    if current:
+                        await message.channel.send(current)
+            else:
+                await message.reply(cdu_status())
+            return
+
         classify_text = clean
         if message.reference and message.reference.resolved:
             ref_content = (message.reference.resolved.content or "").strip()
-            if ref_content:
+            # Only append referenced message if it contains a URL — needed so the
+            # classifier can detect YOUTUBE_SUMMARY when the link is in the replied-to
+            # message. Appending unconditionally caused false QUOTE_SAVE hits.
+            if ref_content and _URL_RE.search(ref_content):
                 classify_text = f"{clean}\n[Benutzer antwortet auf: {ref_content[:300]}]"
 
         intent, extra = await classify_intent(classify_text)
@@ -1061,27 +1351,32 @@ async def on_message(message: discord.Message):
 
         # ── MEMORY_LIST ───────────────────────────────────────────────────────
         if intent == "MEMORY_LIST":
-            memories = list_memories(message.author.id, privileged)
+            if not privileged:
+                await message.reply("Das können nur Admins und Mods.")
+                return
+            memories = list_memories()
             if not memories:
-                all_count = len(load_memories())
-                if all_count > 0 and not privileged:
-                    await message.reply(f"Nichts über dich gespeichert. Es gibt {all_count} Einträge von anderen – du brauchst Mod-Rechte um sie zu sehen.")
-                else:
-                    await message.reply("Keine Einträge vorhanden.")
+                await message.reply("Keine Einträge vorhanden.")
                 return
             lines = []
             for m in memories:
-                preview = m['content']
-                if len(preview) > 300:
-                    preview = preview[:300] + "…"
-                if privileged:
-                    uses     = m.get("use_count", 0)
-                    last     = m.get("last_used") or "nie"
-                    stats    = f" *(×{uses}, zuletzt: {last})*"
-                    lines.append(f"**{m['added_by']}** ({m['date']}){stats}: {preview}")
+                mtype   = m.get("type", "general")
+                preview = m["content"]
+                if len(preview) > 200:
+                    preview = preview[:200] + "…"
+                if mtype == "bot":
+                    label = "[Bot]"
+                    if m.get("trigger"):
+                        label += f" (wenn: {m['trigger']})"
+                elif mtype == "user":
+                    subj    = m.get("subject") or "?"
+                    aliases = m.get("aliases") or []
+                    label   = f"[{subj}" + (f" / {', '.join(aliases)}" if aliases else "") + "]"
                 else:
-                    lines.append(f"({m['date']}): {preview}")
-            header = "Alles was ich weiß:" if privileged else "Was ich über dich weiß:"
+                    label = "[Allgemein]"
+                uses  = m.get("use_count", 0)
+                lines.append(f"**{label}** ({m['date']}, ×{uses}): {preview}")
+            header = "Alles was ich weiß:"
             # Discord hard limit is 4000 chars per message; send in chunks if needed.
             chunks = []
             current = header
@@ -1100,10 +1395,13 @@ async def on_message(message: discord.Message):
 
         # ── MEMORY_DELETE ─────────────────────────────────────────────────────
         if intent == "MEMORY_DELETE":
+            if not privileged:
+                await message.reply("Das können nur Admins und Mods.")
+                return
             specific = None if extra.lower() == "all" else extra
             count    = delete_memories(message.author.id, privileged, specific)
             if count == 0:
-                await message.reply("Nichts gefunden – entweder existiert es nicht oder es gehört dir nicht.")
+                await message.reply("Nichts gefunden.")
             else:
                 await message.reply(f"{count} Eintrag/Einträge gelöscht.")
             return
@@ -1118,7 +1416,8 @@ async def on_message(message: discord.Message):
             for r in reminders:
                 owner    = f"**{r.get('username', '?')}** – " if privileged else ""
                 interval = f", dann alle {fmt_duration(r['interval_seconds'])}" if r.get("interval_seconds") else ""
-                lines.append(f"`[{r['id']}]` {owner}\"{r['message']}\" – nächste: {fmt_ts(r['due_ts'])}{interval}")
+                mode_tag = " 🤖" if r.get("mode") == "prompt" else ""
+                lines.append(f"`[{r['id']}]`{mode_tag} {owner}\"{r['message']}\" – nächste: {fmt_ts(r['due_ts'])}{interval}")
             header = "Alle aktiven Erinnerungen:" if privileged else "Deine aktiven Erinnerungen:"
             await message.reply(header + "\n" + "\n".join(lines))
             return
@@ -1140,13 +1439,16 @@ async def on_message(message: discord.Message):
                     sec_until  = int(re.sub(r"[^\d]", "", parts[0]))
                     interval   = int(re.sub(r"[^\d]", "", parts[1]))
                     remind_msg = parts[2].strip()
-                    rid = add_reminder(message.channel.id, message.author.id,
-                                       message.author.display_name, remind_msg, sec_until, interval)
-                    time_str = fmt_duration(sec_until)
+                    mode       = await _classify_reminder_mode(remind_msg)
+                    rid        = add_reminder(message.channel.id, message.author.id,
+                                              message.author.display_name, remind_msg,
+                                              sec_until, interval, mode)
+                    time_str   = fmt_duration(sec_until)
+                    mode_hint  = "*(ich generiere dann eine Antwort)*" if mode == "prompt" else "*(Erinnerungstext)*"
                     if interval:
-                        reply_txt = f'Mach ich `[{rid}]`. Erste Erinnerung in {time_str}, dann alle {fmt_duration(interval)}: "{remind_msg}"'
+                        reply_txt = f'Mach ich `[{rid}]` {mode_hint}. Erste Ausführung in {time_str}, dann alle {fmt_duration(interval)}: "{remind_msg}"'
                     else:
-                        reply_txt = f'Mach ich `[{rid}]`. In {time_str}: "{remind_msg}"'
+                        reply_txt = f'Mach ich `[{rid}]` {mode_hint}. In {time_str}: "{remind_msg}"'
                     await message.reply(reply_txt)
                     return
                 except (ValueError, IndexError):
@@ -1256,24 +1558,41 @@ async def on_message(message: discord.Message):
                 response = await asyncio.to_thread(
                     anthropic.messages.create,
                     model=CLAUDE_MODEL,
-                    max_tokens=1200,
+                    max_tokens=2000,
                     system=(
-                        "Du analysierst einen Discord-Chatverlauf und erstellst einen kompakten Memory-Eintrag "
-                        "für einen Bot, damit er das Verhalten von heute reproduzieren kann.\n\n"
-                        "Extrahiere und fasse zusammen:\n"
-                        "- Persönlichkeitsmerkmale und Verhaltensweisen die der Bot heute gezeigt hat\n"
-                        "- Running-Gags, Witze, Referenzen und Insider die entstanden sind\n"
-                        "- Regeln, Erwartungen oder Rollen die Nutzer für den Bot etabliert haben\n"
-                        "- Wichtige Fakten über einzelne Nutzer die im Chat festgestellt wurden\n"
-                        "- Beziehungsdynamiken zwischen Nutzern und Bot\n\n"
-                        "Schreibe einen kompakten Fließtext als wäre es ein Gedächtniseintrag des Bots selbst. "
-                        "Kein Bullet-Point-Gelaber. Max 400 Wörter. Nur das Wesentliche."
+                        f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
+                        "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
+                        "BOT | <Fakt über den Bot selbst> | <Trigger/Kontext oder NONE>\n"
+                        "USER | <Anzeigename wie im Chat> | <echte Namen und Spitznamen kommagetrennt oder NONE> | <Fakt>\n"
+                        "GENERAL | <allgemeiner Fakt ohne klaren Nutzer- oder Bot-Bezug>\n\n"
+                        "Regeln:\n"
+                        "- Jede Zeile = genau eine Aussage. Keine Interpretationen, nur gesicherte Fakten aus dem Chat.\n"
+                        "- BOT: Spitznamen, Rollen, Besitztümer, Verhaltensregeln, Dynamiken die der Bot eingegangen ist\n"
+                        "- BOT-Trigger: Kontext in dem ein Fakt gilt (z.B. 'wenn BonusPizza schreibt'), sonst NONE\n"
+                        "- USER: Anzeigename exakt so wie er im Chatverlauf steht. Aliases = alle anderen bekannten Namen.\n"
+                        "- USER-Fakten: echte Namen, Spitznamen, Rollen, Besitztümer, Beziehungen zum Bot oder anderen\n"
+                        "- Nur was explizit im Chat steht oder klar abgeleitet werden kann.\n"
+                        "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
                     ),
-                    messages=[{"role": "user", "content": f"Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
+                    messages=[{"role": "user", "content": "Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
                 )
-                fact = response.content[0].text.strip()
-                add_memory(fact, message.author.display_name, message.author.id)
-            await message.reply("Gespeichert. Ich weiß jetzt, was heute war.")
+                raw_facts = response.content[0].text.strip()
+                parsed    = _parse_snapshot_facts(raw_facts)
+                if not parsed:
+                    await message.reply("Konnte keine strukturierten Fakten extrahieren. Versuch's nochmal.")
+                    return
+                for fact_data in parsed:
+                    add_memory(
+                        fact    = fact_data["content"],
+                        added_by= message.author.display_name,
+                        user_id = message.author.id,
+                        memory_type = fact_data["type"],
+                        subject = fact_data.get("subject"),
+                        aliases = fact_data.get("aliases"),
+                        trigger = fact_data.get("trigger"),
+                    )
+                log.info(f"SNAPSHOT: {len(parsed)} Fakten gespeichert")
+            await message.reply(f"Gespeichert. {len(parsed)} Einträge angelegt.")
             return
 
         # ── QUOTE_SAVE ────────────────────────────────────────────────────────
