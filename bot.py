@@ -90,6 +90,9 @@ DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "true").lower() == "true"
 DIGEST_HOUR    = int(os.environ.get("DIGEST_HOUR",   "23"))
 DIGEST_MINUTE  = int(os.environ.get("DIGEST_MINUTE", "0"))
 
+# Flavor memory cooldown — suppress flavor entries used within this window
+FLAVOR_COOLDOWN_HOURS = int(os.environ.get("FLAVOR_COOLDOWN_HOURS", "6"))
+
 
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
@@ -246,15 +249,6 @@ _STOPWORDS = {
     "was", "were", "will", "would", "should", "could", "from", "they", "their",
 }
 
-def _memory_keywords(text: str) -> set[str]:
-    """Extract significant words (≥4 chars, not stopwords, not the bot's own name) from a text."""
-    bot_name_lower = BOT_NAME.lower()
-    return {
-        w.lower() for w in re.findall(r"[A-Za-zÄäÖöÜüß]{4,}", text)
-        if w.lower() not in _STOPWORDS and w.lower() != bot_name_lower
-    }
-
-
 def list_memories() -> list:
     return load_memories()
 
@@ -262,103 +256,28 @@ def delete_memories(user_id: int, privileged: bool,
                     specific: str = None, target_user_id: int = None) -> int:
     memories = load_memories()
     before   = len(memories)
-
-    # Determine which user's memories to touch
     owner_id = target_user_id if (privileged and target_user_id) else user_id
-
     if specific:
         memories = [m for m in memories if not (
             m.get("user_id") == owner_id and specific.lower() in m["content"].lower()
         )]
     else:
         memories = [m for m in memories if m.get("user_id") != owner_id]
-
     save_memories(memories)
     return before - len(memories)
 
-def _user_referenced(memory: dict, context_lower: str) -> bool:
-    """True if this user-type memory's subject or any alias appears in the conversation text."""
-    identifiers = []
-    if memory.get("subject"):
-        identifiers.append(memory["subject"])
-    identifiers.extend(memory.get("aliases") or [])
-    return any(ident.lower() in context_lower for ident in identifiers if len(ident) >= 3)
 
-
-def memories_as_context(full_context: str = "", message_context: str = "",
-                        track_usage: bool = False, current_speaker: str = "") -> str:
-    """Inject relevant memories into the system prompt.
-
-    full_context     — full conversation history + current message; used for bot-fact
-                       trigger matching only.
-    message_context  — current user message only; used for general/legacy keyword
-                       matching and for detecting which non-speaker users are referenced.
-    track_usage      — if True, increment use_count on every injected entry.
-    current_speaker  — display_name of the user who sent the current message; their
-                       memories are always injected regardless of name appearance.
-    """
-    memories = load_memories()
-    if not memories:
-        return ""
-
-    full_lower = full_context.lower()
-    msg_lower  = (message_context or "").lower()
-    msg_kws    = _memory_keywords(message_context or full_context)
-
-    # Build a unified alias map so identity is looked up once per subject,
-    # regardless of which entry carries the aliases field.
+def _build_alias_map(memories: list) -> dict[str, set[str]]:
     alias_map: dict[str, set[str]] = {}
     for m in memories:
         if m.get("type") == "user" and m.get("subject"):
             subj = m["subject"]
-            alias_map.setdefault(subj, set())
-            alias_map[subj].update(m.get("aliases") or [])
+            alias_map.setdefault(subj, set()).update(m.get("aliases") or [])
+    return alias_map
 
-    spk_lower = current_speaker.lower() if current_speaker else ""
 
-    def _is_user_present(subject: str) -> bool:
-        identifiers = {subject} | alias_map.get(subject, set())
-        # Always inject memories for the current speaker.
-        if spk_lower and any(ident.lower() == spk_lower for ident in identifiers if len(ident) >= 3):
-            return True
-        # For everyone else: only inject if explicitly mentioned in the current message.
-        return any(ident.lower() in msg_lower for ident in identifiers if len(ident) >= 3)
-
-    bot_facts, user_facts, general_facts = [], [], []
-    for m in memories:
-        mtype = m.get("type", "general")
-        if mtype == "bot":
-            # No trigger → always inject. With trigger → only when trigger keywords
-            # appear in the conversation so we don't spam it on every message.
-            trigger = m.get("trigger")
-            if trigger:
-                trigger_kws = _memory_keywords(trigger)
-                if trigger_kws and not any(kw in full_lower for kw in trigger_kws):
-                    continue
-            bot_facts.append(m)
-        elif mtype == "user":
-            if m.get("subject") and _is_user_present(m["subject"]):
-                user_facts.append(m)
-        else:
-            # General / legacy blobs: match against current message keywords only.
-            # Using full history causes large old blobs to match nearly always.
-            if not msg_kws or len(_memory_keywords(m.get("content", "")) & msg_kws) >= 2:
-                general_facts.append(m)
-
-    selected = bot_facts + user_facts + general_facts
-
-    if track_usage and selected:
-        selected_ids = {m["id"] for m in selected if m.get("id")}
-        now_str = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
-        changed = False
-        for m in memories:
-            if m.get("id") in selected_ids:
-                m["use_count"] = m.get("use_count", 0) + 1
-                m["last_used"] = now_str
-                changed = True
-        if changed:
-            save_memories(memories)
-
+def _format_memory_sections(bot_facts, identity_facts, flavor_facts, general_facts,
+                             alias_map: dict) -> str:
     sections = []
 
     if bot_facts:
@@ -370,19 +289,28 @@ def memories_as_context(full_context: str = "", message_context: str = "",
             lines.append(line)
         sections.append("Fakten über mich (den Bot):\n" + "\n".join(lines))
 
-    if user_facts:
-        # Group by subject; use the unified alias map for the header, not per-entry aliases
+    if identity_facts:
         by_subject: dict[str, list] = {}
-        for m in user_facts:
-            subj = m.get("subject") or "Unbekannt"
-            by_subject.setdefault(subj, []).append(m)
+        for m in identity_facts:
+            by_subject.setdefault(m.get("subject") or "?", []).append(m)
         lines = []
         for subj, facts in by_subject.items():
-            aliases    = sorted(alias_map.get(subj, set()))
-            alias_str  = f" ({', '.join(aliases)})" if aliases else ""
-            facts_str  = "; ".join(f["content"] for f in facts)
-            lines.append(f"- {subj}{alias_str}: {facts_str}")
-        sections.append("Bekannte Nutzer im aktuellen Gespräch:\n" + "\n".join(lines))
+            aliases   = sorted(alias_map.get(subj, set()))
+            alias_str = f" ({', '.join(aliases)})" if aliases else ""
+            lines.append(f"- {subj}{alias_str}: {'; '.join(f['content'] for f in facts)}")
+        sections.append("Bekannte Nutzer:\n" + "\n".join(lines))
+
+    if flavor_facts:
+        by_subject = {}
+        for m in flavor_facts:
+            by_subject.setdefault(m.get("subject") or "?", []).append(m)
+        lines = []
+        for subj, facts in by_subject.items():
+            lines.append(f"- {subj}: {'; '.join(f['content'] for f in facts)}")
+        sections.append(
+            "Persönliche Details – nur einfließen lassen wenn natürlich, nicht erzwingen:\n"
+            + "\n".join(lines)
+        )
 
     if general_facts:
         lines = [f"- {m['content']}" for m in general_facts]
@@ -390,12 +318,142 @@ def memories_as_context(full_context: str = "", message_context: str = "",
 
     if not sections:
         return ""
-
     return (
         "Hintergrundwissen – nutze dies als Kontext, "
         "aber aktuelle Chatnachrichten haben Vorrang bei Widersprüchen:\n\n"
         + "\n\n".join(sections)
     )
+
+
+def _always_on_memory_block() -> str:
+    """Sync: bot facts without trigger only. Used for reminders, plugin dispatch, etc."""
+    memories = load_memories()
+    bot_facts = [m for m in memories if m.get("type") == "bot" and not m.get("trigger")]
+    return _format_memory_sections(bot_facts, [], [], [], {})
+
+
+async def _haiku_memory_filter(message_context: str, speaker: str,
+                                candidates: list[dict]) -> set[str]:
+    """Ask Haiku which trigger/general memory candidates are relevant to this message."""
+    if not candidates:
+        return set()
+    lines = []
+    for m in candidates:
+        mid = m.get("id", "?")
+        if m.get("trigger"):
+            lines.append(f'[trigger] {mid} Bedingung="{m["trigger"]}" — {m["content"][:120]}')
+        else:
+            lines.append(f'[general] {mid} — {m["content"][:120]}')
+    prompt = (
+        f'Nachricht von {speaker}: "{message_context}"\n\n'
+        "Welche der folgenden Erinnerungen sind für diese Nachricht relevant?\n"
+        "Für [trigger]-Einträge: prüfe ob die Nachricht die beschriebene Bedingung erfüllt.\n"
+        "Für [general]-Einträge: prüfe ob der Inhalt thematisch zur Nachricht passt.\n\n"
+        + "\n".join(lines)
+        + "\n\nAntworte nur mit kommaseparierten IDs der relevanten Einträge, oder NONE."
+    )
+    try:
+        resp = await asyncio.to_thread(
+            anthropic.messages.create,
+            model=CHEAP_MODEL,
+            max_tokens=100,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = resp.content[0].text.strip()
+        if text.upper() == "NONE":
+            return set()
+        return {p.strip() for p in text.split(",") if p.strip()}
+    except Exception as e:
+        log.warning(f"Haiku memory filter fehlgeschlagen: {e}")
+        return set()
+
+
+async def build_memory_block(message_context: str, full_context: str = "",
+                              current_speaker: str = "",
+                              track_usage: bool = False) -> str:
+    """Full async memory selection with type-aware injection and Haiku evaluation."""
+    memories = load_memories()
+    if not memories:
+        return ""
+
+    alias_map = _build_alias_map(memories)
+    spk_lower = current_speaker.lower() if current_speaker else ""
+    msg_lower = message_context.lower()
+
+    def _is_speaker(subject: str) -> bool:
+        return bool(spk_lower and any(
+            ident.lower() == spk_lower
+            for ident in ({subject} | alias_map.get(subject, set()))
+            if len(ident) >= 3
+        ))
+
+    def _is_mentioned(subject: str) -> bool:
+        return any(
+            ident.lower() in msg_lower
+            for ident in ({subject} | alias_map.get(subject, set()))
+            if len(ident) >= 3
+        )
+
+    def _flavor_cooled_down(m: dict) -> bool:
+        last = m.get("last_used")
+        if not last:
+            return True
+        try:
+            lu = datetime.strptime(last, "%d.%m.%Y %H:%M").replace(tzinfo=TZ)
+            return (datetime.now(TZ) - lu).total_seconds() > FLAVOR_COOLDOWN_HOURS * 3600
+        except Exception:
+            return True
+
+    always_bot:         list[dict] = []
+    trigger_candidates: list[dict] = []
+    identity_facts:     list[dict] = []
+    flavor_candidates:  list[dict] = []
+    general_candidates: list[dict] = []
+
+    for m in memories:
+        mtype = m.get("type", "general")
+        if mtype == "bot":
+            if m.get("trigger"):
+                trigger_candidates.append(m)
+            else:
+                always_bot.append(m)
+        elif mtype == "user":
+            subject = m.get("subject")
+            if not subject:
+                continue
+            if m.get("flavor"):
+                if _is_speaker(subject) and _flavor_cooled_down(m):
+                    flavor_candidates.append(m)
+            else:
+                if _is_speaker(subject) or _is_mentioned(subject):
+                    identity_facts.append(m)
+        else:
+            general_candidates.append(m)
+
+    haiku_candidates = trigger_candidates + general_candidates
+    haiku_ids = await _haiku_memory_filter(message_context, current_speaker, haiku_candidates)
+
+    selected_triggers = [m for m in trigger_candidates if m.get("id") in haiku_ids]
+    selected_general  = [m for m in general_candidates  if m.get("id") in haiku_ids]
+    bot_facts         = always_bot + selected_triggers
+
+    if track_usage:
+        selected = bot_facts + identity_facts + flavor_candidates + selected_general
+        if selected:
+            selected_ids = {m["id"] for m in selected if m.get("id")}
+            now_str = datetime.now(TZ).strftime("%d.%m.%Y %H:%M")
+            changed = False
+            for m in memories:
+                if m.get("id") in selected_ids:
+                    m["use_count"] = m.get("use_count", 0) + 1
+                    m["last_used"] = now_str
+                    changed = True
+            if changed:
+                save_memories(memories)
+
+    return _format_memory_sections(bot_facts, identity_facts, flavor_candidates,
+                                   selected_general, alias_map)
+
 
 def _is_main(channel_id: int | None) -> bool:
     return channel_id is not None and channel_id in MAIN_CHANNEL_IDS
@@ -406,14 +464,16 @@ def _base_prompt(channel_id: int | None) -> str:
 def _model(channel_id: int | None) -> str:
     return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
 
-def build_system_prompt(channel_id: int | None = None,
-                        full_context: str = "",
-                        message_context: str = "",
-                        track_usage: bool = False,
-                        current_speaker: str = "") -> str:
-    mem = memories_as_context(full_context, message_context, track_usage=track_usage, current_speaker=current_speaker) if _is_main(channel_id) else ""
+def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
+    """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
-    return (mem + "\n\n" + base) if mem else base
+    if memory_block:
+        return memory_block + "\n\n" + base
+    if _is_main(channel_id):
+        mem = _always_on_memory_block()
+        if mem:
+            return mem + "\n\n" + base
+    return base
 
 # ── Quotes ───────────────────────────────────────────────────────────────────
 
@@ -599,12 +659,15 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
-    # Build full conversation text for memory matching — user identification needs to
-    # look across the whole recent history, not just the current message.
     hist_text = " ".join(m["content"] for m in messages if isinstance(m["content"], str))
-    full_memory_ctx = f"{hist_text} {memory_context or user_message}".strip()
-    # Cache the historical context prefix. The last fetched message marks the boundary —
-    # everything before it is the same on the next turn, so the API can serve it from cache.
+    full_ctx  = f"{hist_text} {memory_context or user_message}".strip()
+    mem_block = await build_memory_block(
+        message_context  = memory_context or user_message,
+        full_context     = full_ctx,
+        current_speaker  = username,
+        track_usage      = _is_main(channel_id),
+    ) if _is_main(channel_id) else ""
+    # Cache the historical context prefix — everything before the last message is stable.
     if messages:
         last = messages[-1]
         hist_content = last["content"]
@@ -616,14 +679,19 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         content.extend(image_blocks)
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
-        build_system_prompt(channel_id, full_context=full_memory_ctx, message_context=memory_context or user_message, track_usage=_is_main(channel_id), current_speaker=username),
+        build_system_prompt(channel_id, memory_block=mem_block),
         messages, model=_model(channel_id)
     )
     return reply
 
 async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> tuple[bool, str]:
+    mem_block = await build_memory_block(
+        message_context = user_message,
+        full_context    = f"{recent_context}\n{user_message}",
+        current_speaker = username,
+    ) if _is_main(channel_id) else ""
     system = (
-        build_system_prompt(channel_id, full_context=f"{recent_context}\n{user_message}", message_context=user_message, current_speaker=username) + "\n\n"
+        build_system_prompt(channel_id, memory_block=mem_block) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
@@ -811,7 +879,7 @@ async def daily_digest():
         log.info(f"Digest #{channel_id}: analysiere {len(lines)} Nachrichten")
 
         summary = await _claude_loop(
-            build_system_prompt() + (
+            _base_prompt(channel_id) + (
                 "\n\nDu schaust dir den heutigen Chatverlauf an und entscheidest ob etwas "
                 "Erwähnenswertes passiert ist – interessante Diskussionen, wichtige Infos, "
                 "lustige Momente oder relevante Themen. "
