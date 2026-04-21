@@ -179,23 +179,63 @@ def add_memory(fact: str, added_by: str, user_id: int,
                memory_type: str = "general",
                subject: str = None,
                aliases: list[str] = None,
-               trigger: str = None):
+               trigger: str = None,
+               flavor: bool = False,
+               expires: str = None):
     m = load_memories()
-    m.append({
+    entry = {
         "id":       str(uuid.uuid4())[:8],
-        "type":     memory_type,   # "bot" | "user" | "general"
-        "subject":  subject,       # primary name/username for user-type entries
-        "aliases":  aliases or [], # real names, nicknames, other identifiers
-        "trigger":  trigger,       # optional condition for bot-type entries
+        "type":     memory_type,
+        "subject":  subject,
+        "aliases":  aliases or [],
+        "trigger":  trigger,
         "content":  fact,
         "added_by": added_by,
         "user_id":  user_id,
         "date":     datetime.now().strftime("%d.%m.%Y"),
         "use_count": 0,
         "last_used": None,
-    })
+    }
+    if flavor:
+        entry["flavor"] = True
+    if expires:
+        entry["expires"] = expires
+    m.append(entry)
     save_memories(m)
     log.info(f"Memory [{memory_type}] gespeichert von {added_by}: {fact[:80]}")
+
+def cleanup_expired_memories() -> int:
+    memories = load_memories()
+    today = datetime.now(TZ).date()
+    def _expired(m: dict) -> bool:
+        exp = m.get("expires")
+        if not exp:
+            return False
+        try:
+            return datetime.strptime(exp, "%d.%m.%Y").date() < today
+        except Exception:
+            return False
+    kept = [m for m in memories if not _expired(m)]
+    removed = len(memories) - len(kept)
+    if removed:
+        save_memories(kept)
+        log.info(f"Memory-Cleanup: {removed} abgelaufene Einträge entfernt")
+    return removed
+
+def _known_identities_block() -> str:
+    """Build a compact known-users block to pass to extraction prompts."""
+    seen: dict[str, set] = {}
+    for m in load_memories():
+        if m.get("type") == "user" and m.get("subject"):
+            subj = m["subject"]
+            seen.setdefault(subj, set()).update(m.get("aliases") or [])
+    if not seen:
+        return ""
+    lines = []
+    for subj, aliases in sorted(seen.items()):
+        alias_str = f" ({', '.join(sorted(aliases))})" if aliases else ""
+        lines.append(f"- {subj}{alias_str}")
+    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
 
 # German + English stopwords — too common to be useful for usage detection
 _STOPWORDS = {
@@ -792,6 +832,9 @@ async def daily_digest():
 
         # Extract structured atomic facts from the same chat log and store them
         label    = f"Tagesrückblick #{channel.name}"
+        today      = datetime.now(TZ)
+        week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
+        month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
         fact_resp = await asyncio.to_thread(
             anthropic.messages.create,
             model=CLAUDE_MODEL,
@@ -799,16 +842,23 @@ async def daily_digest():
             system=(
                 f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
                 "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
-                "BOT | <Fakt über den Bot selbst> | <Trigger/Kontext oder NONE>\n"
-                "USER | <Anzeigename wie im Chat> | <echte Namen und Spitznamen kommagetrennt oder NONE> | <Fakt>\n"
-                "GENERAL | <allgemeiner Fakt ohne klaren Nutzer- oder Bot-Bezug>\n\n"
+                f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                f"USER | <Anzeigename exakt wie im Chat> | <echte Namen/Spitznamen kommagetrennt oder NONE> | <Identitätsfakt>\n"
+                f"FLAVOR | <Anzeigename> | <Aliase oder NONE> | <Persönlichkeitsfakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                f"GENERAL | <Fakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n\n"
+                f"Ablaufdaten (heute = {today.strftime('%d.%m.%Y')}):\n"
+                f"- Tagesereignisse, kurzfristige Pläne, aktuelle Stimmung → {week_date}\n"
+                f"- Laufende Projekte, aktuelle Situation → {month_date}\n"
+                f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
                 "Regeln:\n"
-                "- Jede Zeile = genau eine Aussage. Keine Interpretationen, nur gesicherte Fakten.\n"
-                "- BOT: Spitznamen, Rollen, Besitztümer, Verhaltensregeln, Dynamiken.\n"
-                "- BOT-Trigger: Kontext in dem ein Fakt gilt (z.B. 'wenn BonusPizza schreibt'), sonst NONE.\n"
-                "- USER: Anzeigename exakt wie im Chat. Aliases = alle anderen bekannten Namen.\n"
-                "- Nur neue oder geänderte Fakten — keine bereits bekannten Dauerfakten wiederholen.\n"
+                "- Eine Zeile = eine Aussage. Nur gesicherte Fakten, keine Interpretation.\n"
+                "- BOT: Titel, Rollen, Besitztümer, Verhaltensregeln, Dynamiken mit Usern.\n"
+                "- USER: Nur für neue Nutzer oder neu entdeckte Aliase. Max. einen USER-Eintrag pro Nutzer.\n"
+                "- FLAVOR: Persönlichkeit, Beziehungen, Vorlieben, Erlebnisse mit Wiederholungspotenzial.\n"
+                "- NICHT speichern: Smalltalk, Einzelereignisse ohne Relevanz für spätere Gespräche, "
+                "Fakten die in einer Woche sicher nicht mehr zutreffen.\n"
                 "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
+                + _known_identities_block()
             ),
             messages=[{"role": "user", "content": "Chatverlauf:\n" + context}],
         )
@@ -822,6 +872,8 @@ async def daily_digest():
                 subject     = fact_data.get("subject"),
                 aliases     = fact_data.get("aliases"),
                 trigger     = fact_data.get("trigger"),
+                flavor      = fact_data.get("flavor", False),
+                expires     = fact_data.get("expires"),
             )
         log.info(f"Digest #{channel_id}: {len(parsed)} Fakten als Memory gespeichert")
 
@@ -838,6 +890,7 @@ async def slash_help(interaction: discord.Interaction):
 
 @bot.event
 async def on_ready():
+    cleanup_expired_memories()
     await plugin_registry.on_ready()
     rotate_status.start()
     if DIGEST_ENABLED:

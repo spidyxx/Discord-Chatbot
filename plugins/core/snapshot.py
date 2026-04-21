@@ -4,16 +4,33 @@ import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, _read
 from plugins import state as bot_state
 
 _log = logging.getLogger(__name__)
 
-_TZ       = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
-_BOT_NAME = os.environ.get("BOT_NAME", "Marvin")
-_MODEL    = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+_TZ          = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
+_BOT_NAME    = os.environ.get("BOT_NAME", "Marvin")
+_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
+_MEMORY_FILE = Path(os.environ.get("DATA_DIR", "/app/data")) / "memory.json"
+
+
+def _known_identities_block() -> str:
+    seen: dict[str, set] = {}
+    for m in _read(_MEMORY_FILE):
+        if m.get("type") == "user" and m.get("subject"):
+            subj = m["subject"]
+            seen.setdefault(subj, set()).update(m.get("aliases") or [])
+    if not seen:
+        return ""
+    lines = [
+        f"- {s}" + (f" ({', '.join(sorted(a))})" if a else "")
+        for s, a in sorted(seen.items())
+    ]
+    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
 
 
 def _parse_snapshot_facts(text: str) -> list[dict]:
@@ -24,16 +41,26 @@ def _parse_snapshot_facts(text: str) -> list[dict]:
             continue
         parts = [p.strip() for p in line.split("|")]
         ftype = parts[0].upper() if parts else ""
+        def _expires(val: str):
+            return val if val.upper() not in ("NONE", "-", "") else None
+
         try:
             if ftype == "BOT" and len(parts) >= 3:
                 trigger = parts[2] if parts[2].upper() not in ("NONE", "-", "") else None
-                facts.append({"type": "bot", "content": parts[1], "trigger": trigger})
+                expires = _expires(parts[3]) if len(parts) >= 4 else None
+                facts.append({"type": "bot", "content": parts[1], "trigger": trigger, "expires": expires})
             elif ftype == "USER" and len(parts) >= 4:
                 aliases_raw = parts[2] if parts[2].upper() not in ("NONE", "-", "") else ""
                 aliases = [a.strip() for a in aliases_raw.split(",") if a.strip()]
                 facts.append({"type": "user", "subject": parts[1], "aliases": aliases, "content": parts[3]})
+            elif ftype == "FLAVOR" and len(parts) >= 4:
+                aliases_raw = parts[2] if parts[2].upper() not in ("NONE", "-", "") else ""
+                aliases = [a.strip() for a in aliases_raw.split(",") if a.strip()]
+                expires = _expires(parts[4]) if len(parts) >= 5 else None
+                facts.append({"type": "user", "flavor": True, "subject": parts[1], "aliases": aliases, "content": parts[3], "expires": expires})
             elif ftype == "GENERAL" and len(parts) >= 2:
-                facts.append({"type": "general", "content": parts[1]})
+                expires = _expires(parts[2]) if len(parts) >= 3 else None
+                facts.append({"type": "general", "content": parts[1], "expires": expires})
         except Exception:
             continue
     return facts
@@ -72,6 +99,9 @@ class SnapshotPlugin(Plugin):
                 await ctx.message.reply("Die letzten 24 Stunden waren leer. Nichts zu speichern.")
                 return
 
+            today      = datetime.now(_TZ)
+            week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
+            month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
             client = bot_state.anthropic_client
             response = await asyncio.to_thread(
                 client.messages.create,
@@ -80,17 +110,23 @@ class SnapshotPlugin(Plugin):
                 system=(
                     f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {_BOT_NAME}.\n\n"
                     "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
-                    "BOT | <Fakt über den Bot selbst> | <Trigger/Kontext oder NONE>\n"
-                    "USER | <Anzeigename wie im Chat> | <echte Namen und Spitznamen kommagetrennt oder NONE> | <Fakt>\n"
-                    "GENERAL | <allgemeiner Fakt ohne klaren Nutzer- oder Bot-Bezug>\n\n"
+                    f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                    f"USER | <Anzeigename exakt wie im Chat> | <echte Namen/Spitznamen kommagetrennt oder NONE> | <Identitätsfakt>\n"
+                    f"FLAVOR | <Anzeigename> | <Aliase oder NONE> | <Persönlichkeitsfakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                    f"GENERAL | <Fakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n\n"
+                    f"Ablaufdaten (heute = {today.strftime('%d.%m.%Y')}):\n"
+                    f"- Tagesereignisse, kurzfristige Pläne, aktuelle Stimmung → {week_date}\n"
+                    f"- Laufende Projekte, aktuelle Situation → {month_date}\n"
+                    f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
                     "Regeln:\n"
-                    "- Jede Zeile = genau eine Aussage. Keine Interpretationen, nur gesicherte Fakten aus dem Chat.\n"
-                    "- BOT: Spitznamen, Rollen, Besitztümer, Verhaltensregeln, Dynamiken die der Bot eingegangen ist\n"
-                    "- BOT-Trigger: Kontext in dem ein Fakt gilt (z.B. 'wenn BonusPizza schreibt'), sonst NONE\n"
-                    "- USER: Anzeigename exakt so wie er im Chatverlauf steht. Aliases = alle anderen bekannten Namen.\n"
-                    "- USER-Fakten: echte Namen, Spitznamen, Rollen, Besitztümer, Beziehungen zum Bot oder anderen\n"
-                    "- Nur was explizit im Chat steht oder klar abgeleitet werden kann.\n"
+                    "- Eine Zeile = eine Aussage. Nur gesicherte Fakten aus dem Chat, keine Interpretation.\n"
+                    "- BOT: Titel, Rollen, Besitztümer, Verhaltensregeln, Dynamiken mit Usern.\n"
+                    "- USER: Nur für neue Nutzer oder neu entdeckte Aliase. Max. einen USER-Eintrag pro Nutzer.\n"
+                    "- FLAVOR: Persönlichkeit, Beziehungen, Vorlieben, Erlebnisse mit Wiederholungspotenzial.\n"
+                    "- NICHT speichern: Smalltalk, Einzelereignisse ohne Relevanz für spätere Gespräche, "
+                    "Fakten die in einer Woche sicher nicht mehr zutreffen.\n"
                     "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
+                    + _known_identities_block()
                 ),
                 messages=[{"role": "user", "content": "Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
             )
@@ -109,6 +145,8 @@ class SnapshotPlugin(Plugin):
                     subject     = fact_data.get("subject"),
                     aliases     = fact_data.get("aliases"),
                     trigger     = fact_data.get("trigger"),
+                    flavor      = fact_data.get("flavor", False),
+                    expires     = fact_data.get("expires"),
                 )
             _log.info(f"SNAPSHOT: {len(parsed)} Fakten gespeichert")
 

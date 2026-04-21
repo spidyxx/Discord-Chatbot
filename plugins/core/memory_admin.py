@@ -43,11 +43,13 @@ class MemoryAdminPlugin(Plugin):
                 elif mtype == "user":
                     subj    = m.get("subject") or "?"
                     aliases = m.get("aliases") or []
-                    label   = f"[{subj}" + (f" / {', '.join(aliases)}" if aliases else "") + "]"
+                    prefix  = "Flavor" if m.get("flavor") else "User"
+                    label   = f"[{prefix}: {subj}" + (f" / {', '.join(aliases)}" if aliases else "") + "]"
                 else:
                     label = "[Allgemein]"
-                uses = m.get("use_count", 0)
-                lines.append(f"**{label}** ({m['date']}, ×{uses}): {preview}")
+                uses    = m.get("use_count", 0)
+                expires = f", läuft ab {m['expires']}" if m.get("expires") else ""
+                lines.append(f"**{label}** ({m['date']}{expires}, ×{uses}): {preview}")
             header  = "Alles was ich weiß:"
             chunks  = []
             current = header
