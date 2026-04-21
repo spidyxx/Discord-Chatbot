@@ -23,7 +23,7 @@ def _read(path: Path) -> list:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        _log.warning(f"Lesen fehlgeschlagen ({path.name}): {e}")
+        _log.warning(f"Read failed ({path.name}): {e}")
     return []
 
 def _write(path: Path, data: list):
@@ -31,7 +31,7 @@ def _write(path: Path, data: list):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        _log.warning(f"Schreiben fehlgeschlagen ({path.name}): {e}")
+        _log.warning(f"Write failed ({path.name}): {e}")
 
 # ── MessageContext ────────────────────────────────────────────────────────────
 

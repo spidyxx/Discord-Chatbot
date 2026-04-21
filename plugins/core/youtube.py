@@ -34,7 +34,7 @@ async def _fetch_transcript(video_id: str) -> str | None:
     except (TranscriptsDisabled, NoTranscriptFound):
         return None
     except Exception as exc:
-        _log.warning(f"YouTube-Transkript konnte nicht geladen werden ({video_id}): {exc}")
+        _log.warning(f"YouTube transcript could not be loaded ({video_id}): {exc}")
         return None
 
 

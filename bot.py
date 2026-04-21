@@ -172,7 +172,7 @@ def _read(path: Path) -> list:
         if path.exists():
             return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
-        log.warning(f"Lesen fehlgeschlagen ({path.name}): {e}")
+        log.warning(f"Read failed ({path.name}): {e}")
     return []
 
 def _write(path: Path, data: list):
@@ -180,7 +180,7 @@ def _write(path: Path, data: list):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
-        log.warning(f"Schreiben fehlgeschlagen ({path.name}): {e}")
+        log.warning(f"Write failed ({path.name}): {e}")
 
 # ── Memory ───────────────────────────────────────────────────────────────────
 
@@ -214,7 +214,7 @@ def add_memory(fact: str, added_by: str, user_id: int,
         entry["expires"] = expires
     m.append(entry)
     save_memories(m)
-    log.info(f"Memory [{memory_type}] gespeichert von {added_by}: {fact[:80]}")
+    log.info(f"Memory [{memory_type}] saved by {added_by}: {fact[:80]}")
 
 def cleanup_expired_memories() -> int:
     memories = load_memories()
@@ -231,7 +231,7 @@ def cleanup_expired_memories() -> int:
     removed = len(memories) - len(kept)
     if removed:
         save_memories(kept)
-        log.info(f"Memory-Cleanup: {removed} abgelaufene Einträge entfernt")
+        log.info(f"Memory cleanup: {removed} expired entries removed")
     return removed
 
 def _known_identities_block() -> str:
@@ -373,7 +373,7 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
             return set()
         return {p.strip() for p in text.split(",") if p.strip()}
     except Exception as e:
-        log.warning(f"Haiku memory filter fehlgeschlagen: {e}")
+        log.warning(f"Haiku memory filter failed: {e}")
         return set()
 
 
@@ -494,7 +494,7 @@ def add_quote(content: str, author: str, added_by: str):
     q.append({"content": content, "author": author, "added_by": added_by,
                "date": datetime.now().strftime("%d.%m.%Y")})
     save_quotes(q)
-    log.info(f"Zitat gespeichert von {added_by}: '{content[:60]}'")
+    log.info(f"Quote saved by {added_by}: '{content[:60]}'")
 
 def get_random_quote() -> dict | None:
     q = load_quotes()
@@ -528,10 +528,10 @@ def _compress_image(data: bytes, content_type: str) -> tuple[bytes, str]:
         scaled.save(buf, format=fmt, quality=quality, optimize=True)
         result = buf.getvalue()
         if len(result) <= MAX_IMAGE_BYTES:
-            log.info(f"Bild komprimiert: {len(data)/1024/1024:.1f} MB → {len(result)/1024/1024:.1f} MB")
+            log.info(f"Image compressed: {len(data)/1024/1024:.1f} MB → {len(result)/1024/1024:.1f} MB")
             return result, content_type
         scale *= 0.7  # shrink dimensions by ~30% each extra pass
-    raise ValueError(f"Bild konnte nicht auf unter 5 MB komprimiert werden ({len(data)/1024/1024:.1f} MB)")
+    raise ValueError(f"Image could not be compressed below 5 MB ({len(data)/1024/1024:.1f} MB)")
 
 async def fetch_images(attachments: list, embeds: list = None, content: str = "") -> list[dict]:
     blocks: list[dict] = []
@@ -552,9 +552,9 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                     data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
-                log.info(f"Bild geladen: {att.filename}")
+                log.info(f"Image loaded: {att.filename}")
             except Exception as e:
-                log.warning(f"Bild laden fehlgeschlagen ({att.filename}): {e}")
+                log.warning(f"Failed to load image ({att.filename}): {e}")
 
         # 2. Discord link-preview embeds (image/thumbnail fields)
         for embed in (embeds or []):
@@ -573,9 +573,9 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                         data, ct = await asyncio.to_thread(_compress_image, data, ct)
                     b64 = base64.standard_b64encode(data).decode()
                     blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
-                    log.info(f"Embed-Bild geladen: {url}")
+                    log.info(f"Embed image loaded: {url}")
                 except Exception as e:
-                    log.warning(f"Embed-Bild laden fehlgeschlagen ({url}): {e}")
+                    log.warning(f"Failed to load embed image ({url}): {e}")
 
         # 3. Direct image URLs in message text (e.g. https://example.com/pic.gif)
         for url in IMAGE_URL_RE.findall(content):
@@ -592,9 +592,9 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                     data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
                 blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
-                log.info(f"URL-Bild geladen: {url}")
+                log.info(f"URL image loaded: {url}")
             except Exception as e:
-                log.warning(f"URL-Bild laden fehlgeschlagen ({url}): {e}")
+                log.warning(f"Failed to load URL image ({url}): {e}")
 
     return blocks
 
@@ -751,11 +751,11 @@ async def fetch_webpage_text(url: str) -> str | None:
     try:
         hostname = urlparse(url).hostname or ""
         if _PRIVATE_HOST_RE.match(hostname):
-            log.warning(f"URL-Fetch blockiert (privater Host): {url}")
+            log.warning(f"URL fetch blocked (private host): {url}")
             return None
         ip = await asyncio.to_thread(socket.gethostbyname, hostname)
         if _PRIVATE_HOST_RE.match(ip):
-            log.warning(f"URL-Fetch blockiert (private IP {ip}): {url}")
+            log.warning(f"URL fetch blocked (private IP {ip}): {url}")
             return None
     except Exception:
         return None
@@ -769,7 +769,7 @@ async def fetch_webpage_text(url: str) -> str | None:
         ) as resp:
             ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
             if "text/html" not in ct:
-                log.info(f"URL-Fetch übersprungen (kein HTML, {ct}): {url}")
+                log.info(f"URL fetch skipped (not HTML, {ct}): {url}")
                 return None
             return await resp.content.read(MAX_FETCH_BYTES)
 
@@ -794,17 +794,17 @@ async def fetch_webpage_text(url: str) -> str | None:
             text = await asyncio.to_thread(_extract, raw)
             # Short/empty result likely means a consent wall — retry with cookies
             if not text or len(text) < 300:
-                log.info(f"URL-Fetch: Inhalt zu kurz ({len(text or '')}\u00a0Zeichen), Wiederholung mit Consent-Cookies: {url}")
+                log.info(f"URL fetch: content too short ({len(text or '')}\u00a0chars), retrying with consent cookies: {url}")
                 raw2 = await _fetch_raw(_FETCH_HEADERS_CONSENT)
                 if raw2:
                     text = await asyncio.to_thread(_extract, raw2)
         if text:
-            log.info(f"URL-Fetch: {len(text)} Zeichen extrahiert aus {url}")
+            log.info(f"URL fetch: {len(text)} chars extracted from {url}")
         else:
-            log.info(f"URL-Fetch: kein Artikeltext extrahiert aus {url}")
+            log.info(f"URL fetch: no article text extracted from {url}")
         return text
     except Exception as e:
-        log.warning(f"URL-Fetch fehlgeschlagen ({url}): {e}")
+        log.warning(f"URL fetch failed ({url}): {e}")
         return None
 
 
@@ -881,11 +881,11 @@ async def daily_digest():
             lines.append(f"{msg.author.display_name}: {content}")
 
         if len(lines) < 5:
-            log.info(f"Digest #{channel_id}: zu wenig Nachrichten ({len(lines)}), übersprungen")
+            log.info(f"Digest #{channel_id}: too few messages ({len(lines)}), skipped")
             continue
 
         context = "\n".join(lines)
-        log.info(f"Digest #{channel_id}: analysiere {len(lines)} Nachrichten")
+        log.info(f"Digest #{channel_id}: analysing {len(lines)} messages")
 
         summary = await _claude_loop(
             _base_prompt(channel_id) + (
@@ -901,11 +901,11 @@ async def daily_digest():
         )
 
         if summary.upper().startswith("SKIP"):
-            log.info(f"Digest #{channel_id}: nichts Erwähnenswertes, kein Post")
+            log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
             continue
 
         await channel.send(f"**Tagesrückblick** 🌙\n{summary}")
-        log.info(f"Digest #{channel_id}: gepostet")
+        log.info(f"Digest #{channel_id}: posted")
 
         # Extract structured atomic facts from the same chat log and store them
         label    = f"Tagesrückblick #{channel.name}"
@@ -952,7 +952,7 @@ async def daily_digest():
                 flavor      = fact_data.get("flavor", False),
                 expires     = fact_data.get("expires"),
             )
-        log.info(f"Digest #{channel_id}: {len(parsed)} Fakten als Memory gespeichert")
+        log.info(f"Digest #{channel_id}: {len(parsed)} facts saved to memory")
 
 
 async def _try_proactive(channel_id: int):
@@ -987,7 +987,7 @@ async def _try_proactive(channel_id: int):
     if silence_minutes < PROACTIVE_SILENCE_MINUTES:
         return
 
-    log.info(f"Proaktiv #{channel_id}: alle Checks bestanden ({silence_minutes:.0f} min still), frage Claude...")
+    log.info(f"Proactive #{channel_id}: all checks passed ({silence_minutes:.0f} min silent), querying Claude...")
 
     context_msgs = await fetch_context(channel_id)
     if not context_msgs:
@@ -1015,10 +1015,10 @@ async def _try_proactive(channel_id: int):
     )
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
     if not reply or reply.upper().startswith("SKIP"):
-        log.info(f"Proaktiv #{channel_id}: Claude hat SKIP gewählt")
+        log.info(f"Proactive #{channel_id}: Claude chose SKIP")
         return
 
-    log.info(f"Proaktiv #{channel_id}: sende '{reply[:80]}'")
+    log.info(f"Proactive #{channel_id}: sending '{reply[:80]}'")
     _proactive_last_sent[channel_id] = now.timestamp()
     await channel.send(reply)
 
@@ -1031,7 +1031,7 @@ async def proactive_check():
         try:
             await _try_proactive(channel_id)
         except Exception:
-            log.exception(f"Proaktiv #{channel_id}: unerwarteter Fehler")
+            log.exception(f"Proactive #{channel_id}: unexpected error")
 
 
 # ── Late bot_state wiring (functions defined after bot = ...) ─────────────────
@@ -1055,12 +1055,12 @@ async def on_ready():
     if PROACTIVE_ENABLED and MAIN_CHANNEL_IDS:
         proactive_check.start()
     await bot.tree.sync()
-    log.info(f"Eingeloggt als {bot.user} (ID {bot.user.id})")
+    log.info(f"Logged in as {bot.user} (ID {bot.user.id})")
     if MAIN_CHANNEL_IDS:
-        log.info(f"Hauptkanäle: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
+        log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
-        log.info("Keine Hauptkanäle konfiguriert – antworte nur auf @Mentions")
-    log.info(f"Hauptkanal-Modell: {MAIN_MODEL} | Anderer-Kanal-Modell: {CLAUDE_MODEL}")
+        log.info("No main channels configured — responding to @mentions only")
+    log.info(f"Main channel model: {MAIN_MODEL} | Other channel model: {CLAUDE_MODEL}")
     log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
@@ -1079,12 +1079,12 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
     """
     try:
         if bot_state.muted:
-            log.info(f"Kanal #{channel_id}: stumm, ignoriere Nachricht")
+            log.info(f"Channel #{channel_id}: muted, ignoring message")
             return
 
         channel = bot.get_channel(channel_id)
         if not channel:
-            log.warning(f"Kanal #{channel_id}: channel-Objekt nicht gefunden")
+            log.warning(f"Channel #{channel_id}: channel object not found")
             return
 
         while True:
@@ -1093,7 +1093,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             cooldown_remaining = COOLDOWN_SECONDS - (asyncio.get_event_loop().time() - _last_response.get(channel_id, 0.0))
             question_bypass = _bot_asked_question.pop(channel_id, False)
             if cooldown_remaining > 0 and not question_bypass:
-                log.info(f"Kanal #{channel_id}: Nachricht gesehen, Cooldown noch {cooldown_remaining:.0f}s")
+                log.info(f"Channel #{channel_id}: message seen, cooldown remaining {cooldown_remaining:.0f}s")
                 return
 
             # Snapshot and consume the trigger message for this iteration only.
@@ -1125,22 +1125,22 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     recent_lines.append(trigger_line)
             else:
                 if not last_msg:
-                    log.info(f"Kanal #{channel_id}: keine Nachrichten in History – überspringe")
+                    log.info(f"Channel #{channel_id}: no messages in history — skipping")
                     return
                 if last_msg.author.bot:
                     log.info(
-                        f"Kanal #{channel_id}: letzte Nachricht ist vom Bot – überspringe "
+                        f"Channel #{channel_id}: last message is from a bot — skipping "
                         f"(@{last_msg.author.display_name}: '{last_msg.content[:80]}', "
                         f"{last_msg.created_at.strftime('%H:%M:%S')})"
                     )
                     return
 
-            log.info(f"Kanal #{channel_id}: evaluiere Antwort auf '{last_msg.content[:60]}' von {last_msg.author.display_name}")
+            log.info(f"Channel #{channel_id}: evaluating response to '{last_msg.content[:60]}' from {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
             image_blocks = await fetch_images(last_msg.attachments, list(last_msg.embeds), last_msg.content or "")
             if question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
-                log.info(f"Kanal #{channel_id}: direkte Antwort auf Bot-Frage – überspringe Evaluierung")
+                log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
                 reply = await ask_claude(
                     last_msg.content, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
@@ -1152,22 +1152,22 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     last_msg.content, last_msg.author.display_name, recent_context,
                     channel_id=channel_id, image_blocks=image_blocks or None,
                 )
-            log.info(f"Kanal #{channel_id}: Evaluierung → {'RESPOND: ' + reply[:80] if respond else 'SKIP'}")
+            log.info(f"Channel #{channel_id}: evaluation → {'RESPOND: ' + reply[:80] if respond else 'SKIP'}")
 
             # New message(s) arrived while we were generating — re-read and try again
             if _channel_pending.get(channel_id):
-                log.info(f"Kanal #{channel_id}: neue Nachrichten während Evaluierung – wiederhole mit aktuellem Kontext")
+                log.info(f"Channel #{channel_id}: new messages arrived during evaluation — retrying with current context")
                 continue
 
             if respond:
-                log.info(f"Kanal #{channel_id}: antworte")
+                log.info(f"Channel #{channel_id}: responding")
                 _last_response[channel_id] = asyncio.get_event_loop().time()
                 _bot_asked_question[channel_id] = reply.rstrip().endswith("?")
                 async with channel.typing():
                     await asyncio.sleep(0.3)
                 await channel.send(reply)
             else:
-                log.info(f"Kanal #{channel_id}: SKIP")
+                log.info(f"Channel #{channel_id}: SKIP")
                 emoji = await get_emoji_reaction(last_msg.content)
                 if emoji:
                     try:
@@ -1176,10 +1176,10 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                         pass
             return
     except asyncio.CancelledError:
-        log.info(f"Kanal #{channel_id}: Task abgebrochen")
+        log.info(f"Channel #{channel_id}: task cancelled")
         raise
     except Exception:
-        log.exception(f"Kanal #{channel_id}: unerwarteter Fehler in _try_respond")
+        log.exception(f"Channel #{channel_id}: unexpected error in _try_respond")
     finally:
         _channel_processing[channel_id] = False
         # If messages arrived while we were busy (including during an early cooldown
@@ -1201,9 +1201,9 @@ async def on_message(message: discord.Message):
 
     is_mention = bot.user in message.mentions
     is_main    = message.channel.id in MAIN_CHANNEL_IDS
-    log.info(f"on_message: #{message.channel.id} von {message.author} | mention={is_mention} main={is_main} muted={bot_state.muted}")
+    log.info(f"on_message: #{message.channel.id} from {message.author} | mention={is_mention} main={is_main} muted={bot_state.muted}")
 
-    # Reaktivieren
+    # Re-activate
     if bot_state.muted:
         if not is_mention:
             return
@@ -1245,10 +1245,10 @@ async def on_message(message: discord.Message):
         _pre = plugin_registry.pre_classify(classify_text)
         if _pre:
             intent, extra = _pre
-            log.info(f"Intent von {message.author} ({'priv' if privileged else 'user'}) [pre]: {intent} | '{clean[:60]}'")
+            log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}) [pre]: {intent} | '{clean[:60]}'")
         else:
             intent, extra = await classify_intent(classify_text)
-            log.info(f"Intent von {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
+            log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
 
         # ── Plugin dispatch ───────────────────────────────────────────────────
         if plugin_registry.handles(intent):
@@ -1300,11 +1300,11 @@ async def on_message(message: discord.Message):
     cid = message.channel.id
     if _channel_processing.get(cid):
         # Generation already running — flag that new messages arrived so it re-evaluates
-        log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} während Evaluierung – als pending markiert")
+        log.info(f"Channel #{cid}: message from {message.author.display_name} during evaluation — marked as pending")
         _channel_pending[cid] = True
         _channel_pending_msg[cid] = message
     else:
-        log.info(f"Kanal #{cid}: Nachricht von {message.author.display_name} – starte Evaluierung")
+        log.info(f"Channel #{cid}: message from {message.author.display_name} — starting evaluation")
         _channel_processing[cid] = True
         task = asyncio.create_task(_try_respond(cid, message))
         _active_tasks.add(task)
@@ -1315,7 +1315,7 @@ async def on_message(message: discord.Message):
 async def main():
     loop = asyncio.get_running_loop()
     def shutdown():
-        log.info("Shutdown-Signal – trenne Verbindung...")
+        log.info("Shutdown signal — disconnecting...")
         asyncio.create_task(bot.close())
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, shutdown)

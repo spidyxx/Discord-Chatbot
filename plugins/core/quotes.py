@@ -35,7 +35,7 @@ def _add(content: str, author: str, added_by: str) -> None:
         "date":     datetime.now().strftime("%d.%m.%Y"),
     })
     _save(q)
-    _log.info(f"Zitat gespeichert von {added_by}: '{content[:60]}'")
+    _log.info(f"Quote saved by {added_by}: '{content[:60]}'")
 
 def _random() -> dict | None:
     q = _load()

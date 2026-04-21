@@ -71,10 +71,10 @@ async def _fire(entry: dict):
             model=bot_state.get_model(entry["channel_id"]),
         )
         await channel.send(f"<@{user_id}> {reply}")
-        _log.info(f"Prompt-Erinnerung ausgeführt für {user_id}: {message[:60]}")
+        _log.info(f"Prompt reminder fired for {user_id}: {message[:60]}")
     else:
         await channel.send(f"<@{user_id}> Erinnerung: {message}")
-        _log.info(f"Erinnerung gesendet an {user_id}: {message[:60]}")
+        _log.info(f"Reminder sent to {user_id}: {message[:60]}")
 
 
 async def _task(entry: dict):
@@ -116,7 +116,7 @@ def _add(channel_id: int, user_id: int, username: str,
     _save(reminders)
     task = asyncio.create_task(_task(entry))
     _reminder_tasks[entry["id"]] = task
-    _log.info(f"Erinnerung [{entry['id']}] gesetzt für {username}: '{message}'")
+    _log.info(f"Reminder [{entry['id']}] set for {username}: '{message}'")
     return entry["id"]
 
 
@@ -153,7 +153,7 @@ def _restore():
             _reminder_tasks[r["id"]] = asyncio.create_task(_task(r))
     _save(active)
     if active:
-        _log.info(f"{len(active)} Erinnerung(en) wiederhergestellt")
+        _log.info(f"{len(active)} reminder(s) restored")
 
 
 # ── Plugin ────────────────────────────────────────────────────────────────────

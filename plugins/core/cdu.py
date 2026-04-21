@@ -1,4 +1,4 @@
-"""CDU Scheiße Counter plugin — pure Python, no API cost."""
+"""CDU shit counter plugin — pure Python, no API cost."""
 
 import logging
 import os

@@ -148,7 +148,7 @@ class SnapshotPlugin(Plugin):
                     flavor      = fact_data.get("flavor", False),
                     expires     = fact_data.get("expires"),
                 )
-            _log.info(f"SNAPSHOT: {len(parsed)} Fakten gespeichert")
+            _log.info(f"SNAPSHOT: {len(parsed)} facts saved")
 
         await ctx.message.reply(f"Gespeichert. {len(parsed)} Einträge angelegt.")
 
