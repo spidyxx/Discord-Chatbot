@@ -15,6 +15,7 @@ A self-hosted Discord bot that uses the Anthropic Claude API to participate in s
 - **Web search** — Built-in web search via Anthropic's web search tool
 - **Image recognition** — Understands images and link previews attached to messages
 - **Mute/unmute** — Silence the bot with a natural language command
+- **Proactive messages** — Occasionally starts a conversation by picking up an unresolved topic or trailing discussion, within configurable hours and only when the channel has been quiet for a while
 
 ## Requirements
 
@@ -72,6 +73,17 @@ All configuration is via environment variables.
 | `SUMMARY_WINDOW` | `30` | Message window for chat summaries |
 | `FLAVOR_COOLDOWN_HOURS` | `6` | Minimum hours before the same flavor memory is injected again |
 | `MOD_ROLE_NAMES` | `Mod,Admin` | Comma-separated role names with elevated memory permissions |
+
+### Proactive Messages
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROACTIVE_ENABLED` | `true` | Enable/disable proactive conversation starter |
+| `PROACTIVE_HOUR_START` | `15` | Earliest hour (local time) the bot may send a proactive message |
+| `PROACTIVE_HOUR_END` | `23` | Latest hour |
+| `PROACTIVE_SILENCE_MINUTES` | `45` | Minutes of channel silence required before the bot considers speaking |
+| `PROACTIVE_COOLDOWN_HOURS` | `4` | Minimum hours between proactive messages per channel |
+| `PROACTIVE_CHECK_MINUTES` | `15` | How often the bot checks whether to send a proactive message |
 
 ### Daily Digest
 

@@ -93,6 +93,14 @@ DIGEST_MINUTE  = int(os.environ.get("DIGEST_MINUTE", "0"))
 # Flavor memory cooldown — suppress flavor entries used within this window
 FLAVOR_COOLDOWN_HOURS = int(os.environ.get("FLAVOR_COOLDOWN_HOURS", "6"))
 
+# Proactive conversation starter
+PROACTIVE_ENABLED         = os.environ.get("PROACTIVE_ENABLED", "true").lower() == "true"
+PROACTIVE_HOUR_START      = int(os.environ.get("PROACTIVE_HOUR_START", "15"))
+PROACTIVE_HOUR_END        = int(os.environ.get("PROACTIVE_HOUR_END", "23"))
+PROACTIVE_SILENCE_MINUTES = int(os.environ.get("PROACTIVE_SILENCE_MINUTES", "45"))
+PROACTIVE_COOLDOWN_HOURS  = int(os.environ.get("PROACTIVE_COOLDOWN_HOURS", "4"))
+PROACTIVE_CHECK_MINUTES   = int(os.environ.get("PROACTIVE_CHECK_MINUTES", "15"))
+
 
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
@@ -136,6 +144,7 @@ _channel_processing: dict[int, bool]    = {}   # True while Claude is generating
 _channel_pending:    dict[int, bool]    = {}   # True if new messages arrived during generation
 _channel_pending_msg: dict[int, discord.Message] = {}  # latest pending message per channel
 _active_tasks:       set[asyncio.Task]  = set()  # strong refs so tasks aren't GC'd before they run
+_proactive_last_sent: dict[int, float]  = {}      # per-channel timestamp of last proactive message
 status_index                      = 0
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -945,6 +954,86 @@ async def daily_digest():
             )
         log.info(f"Digest #{channel_id}: {len(parsed)} Fakten als Memory gespeichert")
 
+
+async def _try_proactive(channel_id: int):
+    """Attempt to start a conversation in a main channel if conditions are met."""
+    now = datetime.now(TZ)
+
+    # Time window
+    if not (PROACTIVE_HOUR_START <= now.hour < PROACTIVE_HOUR_END):
+        return
+
+    # Per-channel cooldown
+    if (now.timestamp() - _proactive_last_sent.get(channel_id, 0.0)) < PROACTIVE_COOLDOWN_HOURS * 3600:
+        return
+
+    # Skip if Claude is already generating for this channel
+    if _channel_processing.get(channel_id):
+        return
+
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        return
+
+    # Fetch last message — bot must not have been the last sender
+    last_msg = None
+    async for msg in channel.history(limit=1):
+        last_msg = msg
+    if not last_msg or last_msg.author == bot.user:
+        return
+
+    # Channel must have been silent long enough
+    silence_minutes = (now - last_msg.created_at.astimezone(TZ)).total_seconds() / 60
+    if silence_minutes < PROACTIVE_SILENCE_MINUTES:
+        return
+
+    log.info(f"Proaktiv #{channel_id}: alle Checks bestanden ({silence_minutes:.0f} min still), frage Claude...")
+
+    context_msgs = await fetch_context(channel_id)
+    if not context_msgs:
+        return
+
+    recent_text = "\n".join(
+        m["content"] if isinstance(m["content"], str)
+        else next((b.get("text", "") for b in m["content"] if isinstance(b, dict) and b.get("type") == "text"), "")
+        for m in context_msgs
+    )
+
+    system = (
+        build_system_prompt(channel_id) + "\n\n"
+        "Du liest den letzten Chatverlauf und entscheidest ob es etwas gibt, das es wert wäre jetzt aufzugreifen — "
+        "eine offene Frage, ein Thema das abgebrochen wurde, etwas das jemand erwähnt hat und worüber du neugierig bist. "
+        "Wenn ja: schreib eine natürliche Nachricht in deinem Stil, als würdest du spontan einhaken. "
+        "Kein künstlicher Gesprächseinstieg, kein 'Hey!' — einfach direkt einsteigen. "
+        "Wenn es nichts Sinnvolles gibt: antworte mit exakt: SKIP"
+    )
+    reply = await _claude_loop(
+        system,
+        [{"role": "user", "content": f"Letzter Chatverlauf:\n{recent_text}"}],
+        max_tokens=300,
+        model=_model(channel_id),
+    )
+    reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
+    if not reply or reply.upper().startswith("SKIP"):
+        log.info(f"Proaktiv #{channel_id}: Claude hat SKIP gewählt")
+        return
+
+    log.info(f"Proaktiv #{channel_id}: sende '{reply[:80]}'")
+    _proactive_last_sent[channel_id] = now.timestamp()
+    await channel.send(reply)
+
+
+@tasks.loop(minutes=PROACTIVE_CHECK_MINUTES)
+async def proactive_check():
+    if not PROACTIVE_ENABLED or bot_state.muted:
+        return
+    for channel_id in MAIN_CHANNEL_IDS:
+        try:
+            await _try_proactive(channel_id)
+        except Exception:
+            log.exception(f"Proaktiv #{channel_id}: unerwarteter Fehler")
+
+
 # ── Late bot_state wiring (functions defined after bot = ...) ─────────────────
 bot_state.claude_loop        = _claude_loop
 bot_state.build_system_prompt = build_system_prompt
@@ -963,6 +1052,8 @@ async def on_ready():
     rotate_status.start()
     if DIGEST_ENABLED:
         daily_digest.start()
+    if PROACTIVE_ENABLED and MAIN_CHANNEL_IDS:
+        proactive_check.start()
     await bot.tree.sync()
     log.info(f"Eingeloggt als {bot.user} (ID {bot.user.id})")
     if MAIN_CHANNEL_IDS:
