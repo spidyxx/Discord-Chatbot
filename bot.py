@@ -647,7 +647,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     async for msg in channel.history(**kwargs):
         ts = _msg_ts(msg.created_at)
         if msg.author == bot.user:
-            messages.append({"role": "assistant", "content": f"[{ts}] {msg.content or ''}"})
+            messages.append({"role": "assistant", "content": msg.content or ""})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if len(content) > 300:
