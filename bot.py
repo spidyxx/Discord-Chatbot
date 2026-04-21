@@ -1179,6 +1179,29 @@ async def on_message(message: discord.Message):
             ))
             return
 
+        # Fallback: no plugin handled the intent — respond directly.
+        # This covers RESPOND intent in both main and non-main channels.
+        # Include the referenced message text so Claude has the full context
+        # even in channels where history isn't pre-loaded.
+        memory_ctx = clean
+        if message.reference and message.reference.resolved:
+            ref = message.reference.resolved
+            ref_text = (ref.content or "").strip()
+            if ref_text:
+                ref_author = ref.author.display_name if ref.author else "?"
+                memory_ctx = f"[antwortet auf {ref_author}: {ref_text[:300]}] {clean}"
+        async with message.channel.typing():
+            reply = await ask_claude(
+                clean, message.author.display_name,
+                image_blocks=image_blocks or None,
+                channel_id=message.channel.id,
+                before_id=message.id,
+                memory_context=memory_ctx,
+            )
+        if reply:
+            await message.reply(reply)
+        return
+
     # No @mention — only main channels get passive responses
     if not is_main:
         return
