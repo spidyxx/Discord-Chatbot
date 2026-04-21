@@ -58,8 +58,9 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `MAIN_CHANNEL_IDS` | *(none)* | Comma-separated channel IDs where the bot participates actively and uses memory |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model used in non-main channels |
 | `MAIN_MODEL` | Same as `CLAUDE_MODEL` | Model used in main channels |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model used in non-main channels |
+| `CHEAP_MODEL` | `claude-haiku-4-5-20251001` | Model used for intent classification and memory filtering |
 
 ### Behaviour
 
@@ -69,6 +70,7 @@ All configuration is via environment variables.
 | `CONTEXT_WINDOW` | `50` | Number of recent messages fetched as conversation context |
 | `EMOJI_REACTION_RATE` | `0.20` | Probability (0–1) of adding an emoji reaction to skipped messages |
 | `SUMMARY_WINDOW` | `30` | Message window for chat summaries |
+| `FLAVOR_COOLDOWN_HOURS` | `6` | Minimum hours before the same flavor memory is injected again |
 | `MOD_ROLE_NAMES` | `Mod,Admin` | Comma-separated role names with elevated memory permissions |
 
 ### Daily Digest
@@ -135,8 +137,9 @@ All commands require an @mention unless the bot addresses you directly.
 
 ## Architecture Notes
 
-- **Memory** is stored as a flat JSON file. Entries are filtered by keyword relevance before injection — only memories with ≥2 keyword overlaps with the current message context are included. The bot's own name is excluded from keyword matching to prevent false positives.
-- **Main vs. other channels**: Main channels get full personality, memory injection, and autonomous participation. Other channels get neutral responses based on chat history only.
+- **Plugin system**: Features are implemented as plugins in `plugins/core/`. Drop a new file with a `setup()` function there and it is auto-discovered on startup — no changes to `bot.py` needed. See `CLAUDE.md` for the full plugin authoring guide.
+- **Memory** is stored as a flat JSON file with typed entries (`bot`, `user`, `flavor`, `general`). Candidate memories are pre-filtered by type and speaker, then a Haiku call decides which trigger/general entries are actually relevant to the current message before injection.
+- **Main vs. other channels**: Main channels get full personality, memory injection, and autonomous participation (debounced). Other channels respond only to @mentions — with channel history as context but without memory injection.
 - **Prompt caching**: System prompt and conversation history are cached via Anthropic's prompt caching API, significantly reducing input token costs on repeated turns.
 - **Question tracking**: When the bot ends a message with a question, the next user reply bypasses the cooldown and the relevance check, ensuring the answer is always processed.
 
