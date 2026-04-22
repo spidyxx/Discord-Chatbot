@@ -80,7 +80,10 @@ class YoutubePlugin(Plugin):
                 [{"role": "user", "content": f"Transkript:\n{transcript}"}],
                 max_tokens=800, model=ctx.model,
             )
-        await ctx.message.reply(summary)
+        chunks = [summary[i:i+2000] for i in range(0, len(summary), 2000)]
+        await ctx.message.reply(chunks[0])
+        for chunk in chunks[1:]:
+            await ctx.message.channel.send(chunk)
 
 
 def setup(registry) -> None:
