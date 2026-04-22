@@ -989,15 +989,22 @@ async def _try_proactive(channel_id: int):
 
     log.info(f"Proactive #{channel_id}: all checks passed ({silence_minutes:.0f} min silent), querying Claude...")
 
-    context_msgs = await fetch_context(channel_id)
-    if not context_msgs:
+    # Only use messages from a recent window so we don't address absent users
+    cutoff = now - timedelta(hours=PROACTIVE_COOLDOWN_HOURS * 2)
+    recent_lines = []
+    async for msg in channel.history(limit=CONTEXT_WINDOW, oldest_first=True, after=cutoff):
+        ts = _msg_ts(msg.created_at)
+        if msg.author == bot.user:
+            recent_lines.append(f"[{ts}] {bot.user.display_name}: {msg.content or ''}")
+        else:
+            content = resolve_mentions(msg.content or "", msg.mentions)
+            if len(content) > 300:
+                content = content[:300] + "…"
+            recent_lines.append(f"[{ts}] {msg.author.display_name}: {content}")
+    if not recent_lines:
+        log.info(f"Proactive #{channel_id}: no recent messages in window, skipping")
         return
-
-    recent_text = "\n".join(
-        m["content"] if isinstance(m["content"], str)
-        else next((b.get("text", "") for b in m["content"] if isinstance(b, dict) and b.get("type") == "text"), "")
-        for m in context_msgs
-    )
+    recent_text = "\n".join(recent_lines)
 
     system = (
         build_system_prompt(channel_id) + "\n\n"
@@ -1005,7 +1012,9 @@ async def _try_proactive(channel_id: int):
         "eine offene Frage, ein Thema das abgebrochen wurde, etwas das jemand erwähnt hat und worüber du neugierig bist. "
         "Wenn ja: schreib eine natürliche Nachricht in deinem Stil, als würdest du spontan einhaken. "
         "Kein künstlicher Gesprächseinstieg, kein 'Hey!' — einfach direkt einsteigen. "
-        "Wenn es nichts Sinnvolles gibt: antworte mit exakt: SKIP"
+        "Wichtig: Bleib neugierig und freundlich. Kein Existentialismus, keine Bedrohlichkeit, keine Paranoia, keine düsteren Monologe. "
+        "Nenn keine Nutzer beim Namen und schreib keine @Erwähnungen — du redest in den Kanal, nicht eine Person an. "
+        "Wenn du nichts Konkretes und Positives aufgreifen kannst: antworte mit exakt: SKIP"
     )
     reply = await _claude_loop(
         system,
