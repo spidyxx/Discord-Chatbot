@@ -76,7 +76,7 @@ class YoutubePlugin(Plugin):
             summary = await ctx.ask_claude(
                 ctx.system_prompt +
                 "\nFasse das folgende YouTube-Video-Transkript in deinem typischen Stil zusammen. "
-                "Gib die wichtigsten Punkte und Erkenntnisse wieder. Sei prägnant aber vollständig.",
+                "Gib die wichtigsten Punkte und Erkenntnisse wieder. Ziel: ca. 200–300 Wörter – prägnant, aber vollständig abgeschlossen.",
                 [{"role": "user", "content": f"Transkript:\n{transcript}"}],
                 max_tokens=1500, model=ctx.model,
             )
