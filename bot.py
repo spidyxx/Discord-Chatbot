@@ -508,6 +508,15 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Anthropic API hard limit
 # Matches direct image URLs in message text (e.g. https://example.com/foo.gif?v=1)
 IMAGE_URL_RE = re.compile(r'https?://\S+\.(?:jpe?g|png|gif|webp)(?:[?#]\S*)?', re.IGNORECASE)
 
+_IMAGE_FORMAT_MAP = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp"}
+
+def _detect_image_ct(data: bytes, fallback: str) -> str:
+    try:
+        with Image.open(io.BytesIO(data)) as img:
+            return _IMAGE_FORMAT_MAP.get(img.format, fallback)
+    except Exception:
+        return fallback
+
 def _compress_image(data: bytes, content_type: str) -> tuple[bytes, str]:
     """Resize/recompress image bytes until they fit within MAX_IMAGE_BYTES."""
     img = Image.open(io.BytesIO(data))
@@ -548,6 +557,7 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
             try:
                 async with session.get(att.url) as resp:
                     data = await resp.read()
+                ct = _detect_image_ct(data, ct)
                 if len(data) > MAX_IMAGE_BYTES:
                     data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
@@ -569,6 +579,7 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                         if ct not in SUPPORTED_IMAGE_TYPES:
                             continue
                         data = await resp.read()
+                    ct = _detect_image_ct(data, ct)
                     if len(data) > MAX_IMAGE_BYTES:
                         data, ct = await asyncio.to_thread(_compress_image, data, ct)
                     b64 = base64.standard_b64encode(data).decode()
@@ -588,6 +599,7 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                     if ct not in SUPPORTED_IMAGE_TYPES:
                         continue
                     data = await resp.read()
+                ct = _detect_image_ct(data, ct)
                 if len(data) > MAX_IMAGE_BYTES:
                     data, ct = await asyncio.to_thread(_compress_image, data, ct)
                 b64 = base64.standard_b64encode(data).decode()
