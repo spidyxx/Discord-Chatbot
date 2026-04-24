@@ -54,6 +54,7 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
 )
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
+RECENT_WINDOW       = int(os.environ.get("RECENT_WINDOW", "8"))   # last N messages kept at full length; older ones truncated hard
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
 
 # ── Model slots ───────────────────────────────────────────────────────────────
@@ -736,11 +737,14 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
             messages.append({"role": "assistant", "content": msg.content or ""})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
-            if len(content) > 300:
-                content = content[:300] + "…"
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
+    # Truncate older messages to reduce their influence; recent messages stay at full length
+    cutoff = len(messages) - RECENT_WINDOW
+    for i, m in enumerate(messages):
+        if i < cutoff and isinstance(m["content"], str) and len(m["content"]) > 80:
+            messages[i] = {**m, "content": m["content"][:80] + "…"}
     return messages
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
