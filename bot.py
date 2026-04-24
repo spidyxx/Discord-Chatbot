@@ -1186,13 +1186,14 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             # during generation will set it to True and trigger a re-evaluation.
             _channel_pending[channel_id] = False
 
-            last_msg     = None
+            all_msgs     = []
             recent_lines = []
             async for msg in channel.history(limit=10, oldest_first=True):
                 name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
                 ts   = _msg_ts(msg.created_at)
                 recent_lines.append(f"[{ts}] {name}: {msg.content}")
-                last_msg = msg
+                all_msgs.append(msg)
+            last_msg = all_msgs[-1] if all_msgs else None
 
             if current_trigger is not None:
                 # Use the known triggering message regardless of what history returned.
@@ -1209,12 +1210,13 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     log.info(f"Channel #{channel_id}: no messages in history — skipping")
                     return
                 if last_msg.author.bot:
-                    log.info(
-                        f"Channel #{channel_id}: last message is from a bot — skipping "
-                        f"(@{last_msg.author.display_name}: '{last_msg.content[:80]}', "
-                        f"{last_msg.created_at.strftime('%H:%M:%S')})"
-                    )
-                    return
+                    # Bot just posted — find the last human message to evaluate instead
+                    human_msgs = [m for m in all_msgs if not m.author.bot]
+                    if not human_msgs:
+                        log.info(f"Channel #{channel_id}: no human messages in history — skipping")
+                        return
+                    last_msg = human_msgs[-1]
+                    log.info(f"Channel #{channel_id}: last message is bot, falling back to last human message from {last_msg.author.display_name}")
 
             log.info(f"Channel #{channel_id}: evaluating response to '{last_msg.content[:60]}' from {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
