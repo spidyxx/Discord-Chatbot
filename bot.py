@@ -64,15 +64,18 @@ NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
 EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
 
 # ── Tier assignments ──────────────────────────────────────────────────────────
-MAIN_TIER           = os.environ.get("MAIN_TIER",           "expensive")
-MENTION_TIER        = os.environ.get("MENTION_TIER",        "normal")
-CLASSIFY_TIER       = os.environ.get("CLASSIFY_TIER",       "cheap")
-EMOJI_TIER          = os.environ.get("EMOJI_TIER",          "cheap")
-MEMORY_FILTER_TIER  = os.environ.get("MEMORY_FILTER_TIER",  "cheap")
-REMINDER_TIER       = os.environ.get("REMINDER_TIER",       "normal")
-PROACTIVE_TIER      = os.environ.get("PROACTIVE_TIER",      "expensive")
-DIGEST_SUMMARY_TIER = os.environ.get("DIGEST_SUMMARY_TIER", "expensive")
-DIGEST_FACTS_TIER   = os.environ.get("DIGEST_FACTS_TIER",   "normal")
+def _tier_env(name: str, default: str) -> str:
+    return os.environ.get(name, default).split("#")[0].strip()
+
+MAIN_TIER           = _tier_env("MAIN_TIER",           "expensive")
+MENTION_TIER        = _tier_env("MENTION_TIER",        "normal")
+CLASSIFY_TIER       = _tier_env("CLASSIFY_TIER",       "cheap")
+EMOJI_TIER          = _tier_env("EMOJI_TIER",          "cheap")
+MEMORY_FILTER_TIER  = _tier_env("MEMORY_FILTER_TIER",  "cheap")
+REMINDER_TIER       = _tier_env("REMINDER_TIER",       "normal")
+PROACTIVE_TIER      = _tier_env("PROACTIVE_TIER",      "expensive")
+DIGEST_SUMMARY_TIER = _tier_env("DIGEST_SUMMARY_TIER", "expensive")
+DIGEST_FACTS_TIER   = _tier_env("DIGEST_FACTS_TIER",   "normal")
 
 # Main channels: bot actively participates (debounced). Comma-separated IDs via MAIN_CHANNEL_IDS.
 # All other channels: bot only responds to @mentions.
