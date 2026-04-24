@@ -1178,8 +1178,9 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 return
 
             # Snapshot and consume the trigger message for this iteration only.
-            # Subsequent iterations (pending) will rely purely on history.
-            current_trigger = trigger_msg
+            # On a retry iteration (trigger_msg is None), peek at any stored
+            # pending message — Discord REST may not have indexed it in history yet.
+            current_trigger = trigger_msg if trigger_msg is not None else _channel_pending_msg.get(channel_id)
             trigger_msg = None
 
             # Reset pending flag BEFORE the API call so any message arriving
