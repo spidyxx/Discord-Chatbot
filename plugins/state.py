@@ -9,6 +9,6 @@ if TYPE_CHECKING:
 muted: bool = False
 bot:              object = None  # discord.ext.commands.Bot instance
 anthropic_client: object = None  # anthropic.Anthropic instance
-claude_loop:      object = None  # _claude_loop(system, messages, max_tokens, model) -> str
+claude_loop:      object = None  # _claude_loop(system, messages, max_tokens, tier) -> str
 build_system_prompt: object = None  # build_system_prompt(channel_id) -> str
-get_model:        object = None  # _model(channel_id) -> str
+get_tier:         object = None  # _tier(channel_id) -> str

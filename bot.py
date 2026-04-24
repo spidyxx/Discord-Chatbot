@@ -1102,7 +1102,7 @@ async def proactive_check():
 # ── Late bot_state wiring (functions defined after bot = ...) ─────────────────
 bot_state.claude_loop        = _claude_loop
 bot_state.build_system_prompt = build_system_prompt
-bot_state.get_model          = _model
+bot_state.get_tier           = _tier
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
