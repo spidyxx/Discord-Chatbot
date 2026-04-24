@@ -59,9 +59,21 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |---|---|---|
 | `MAIN_CHANNEL_IDS` | *(none)* | Comma-separated channel IDs where the bot participates actively and uses memory |
-| `MAIN_MODEL` | Same as `CLAUDE_MODEL` | Model used in main channels |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model used in non-main channels |
-| `CHEAP_MODEL` | `claude-haiku-4-5-20251001` | Model used for intent classification and memory filtering |
+| `MAIN_MODEL` | Same as `CLAUDE_MODEL` | Model for the `expensive` tier (main channel responses, proactive, digest summary) |
+| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model for the `normal` tier (non-main channel responses, fact extraction) |
+| `CHEAP_MODEL` | `claude-haiku-4-5-20251001` | Model for the `cheap` tier (intent classification, memory filtering, emoji reactions) |
+
+### Local LLM (optional)
+
+Any tier can be routed to a local model via [Ollama](https://ollama.com) instead of the Claude API.
+
+| Variable | Default | Description |
+|---|---|---|
+| `OLLAMA_BASE_URL` | *(none)* | Ollama server URL, e.g. `http://192.168.1.100:11434` |
+| `OLLAMA_MODEL` | *(none)* | Model name in Ollama, e.g. `llama3.1:8b-instruct-q4_0` |
+| `LOCAL_TIERS` | *(none)* | Comma-separated tiers to route locally, e.g. `cheap` or `cheap,normal` |
+
+When `LOCAL_TIERS` is set, calls for those tiers go to Ollama; all other tiers continue to use the Claude API. Both variables must be set for local routing to activate.
 
 ### Behaviour
 
@@ -150,7 +162,7 @@ All commands require an @mention unless the bot addresses you directly.
 ## Architecture Notes
 
 - **Plugin system**: Features are implemented as plugins in `plugins/core/`. Drop a new file with a `setup()` function there and it is auto-discovered on startup — no changes to `bot.py` needed. See `CLAUDE.md` for the full plugin authoring guide.
-- **Memory** is stored as a flat JSON file with typed entries (`bot`, `user`, `flavor`, `general`). Candidate memories are pre-filtered by type and speaker, then a Haiku call decides which trigger/general entries are actually relevant to the current message before injection.
+- **Memory** is stored as a flat JSON file with typed entries (`bot`, `user`, `flavor`, `general`). Candidate memories are pre-filtered by type and speaker, then a cheap-tier LLM call decides which trigger/general entries are actually relevant to the current message before injection.
 - **Main vs. other channels**: Main channels get full personality, memory injection, and autonomous participation (debounced). Other channels respond only to @mentions — with channel history as context but without memory injection.
 - **Prompt caching**: System prompt and conversation history are cached via Anthropic's prompt caching API, significantly reducing input token costs on repeated turns.
 - **Question tracking**: When the bot ends a message with a question, the next user reply bypasses the cooldown and the relevance check, ensuring the answer is always processed.
@@ -160,7 +172,9 @@ All commands require an @mention unless the bot addresses you directly.
 ```
 discord.py==2.3.2
 anthropic>=0.49.0
+openai>=1.0.0
 aiohttp>=3.9.0
 Pillow>=10.0.0
 youtube-transcript-api>=0.6.0
+trafilatura>=1.6.0
 ```
