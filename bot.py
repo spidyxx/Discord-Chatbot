@@ -746,6 +746,12 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     for i, m in enumerate(messages):
         if i < cutoff and m["role"] == "user" and isinstance(m["content"], str) and len(m["content"]) > 80:
             messages[i] = {**m, "content": m["content"][:80] + "…"}
+    n_user = sum(1 for m in messages if m["role"] == "user")
+    n_asst = sum(1 for m in messages if m["role"] == "assistant")
+    log.info(f"fetch_context #{channel_id}: {len(messages)} msgs ({n_user} user, {n_asst} assistant), cutoff={max(cutoff,0)}, recent={min(RECENT_WINDOW, len(messages))}")
+    if messages:
+        last = messages[-1]
+        log.info(f"fetch_context #{channel_id}: last msg role={last['role']} content={str(last['content'])[:80]!r}")
     return messages
 
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
@@ -1234,10 +1240,12 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 )
                 respond = bool(reply)
             else:
+                log.info(f"Channel #{channel_id}: evaluating via should_respond for '{last_msg.content[:60]}'")
                 respond = await should_respond(
                     last_msg.content, last_msg.author.display_name, recent_context,
                     channel_id=channel_id, image_blocks=image_blocks or None,
                 )
+                log.info(f"Channel #{channel_id}: should_respond → {'RESPOND' if respond else 'SKIP'}")
                 if respond:
                     reply = await ask_claude(
                         last_msg.content, last_msg.author.display_name,
