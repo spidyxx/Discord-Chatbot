@@ -68,7 +68,7 @@ async def _fire(entry: dict):
         reply = await bot_state.claude_loop(
             bot_state.build_system_prompt(entry["channel_id"]),
             [{"role": "user", "content": message}],
-            tier=bot_state.get_tier(entry["channel_id"]),
+            tier=bot_state.reminder_tier,
         )
         await channel.send(f"<@{user_id}> {reply}")
         _log.info(f"Prompt reminder fired for {user_id}: {message[:60]}")

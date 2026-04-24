@@ -69,6 +69,7 @@ MENTION_TIER        = os.environ.get("MENTION_TIER",        "normal")
 CLASSIFY_TIER       = os.environ.get("CLASSIFY_TIER",       "cheap")
 EMOJI_TIER          = os.environ.get("EMOJI_TIER",          "cheap")
 MEMORY_FILTER_TIER  = os.environ.get("MEMORY_FILTER_TIER",  "cheap")
+REMINDER_TIER       = os.environ.get("REMINDER_TIER",       "normal")
 PROACTIVE_TIER      = os.environ.get("PROACTIVE_TIER",      "expensive")
 DIGEST_SUMMARY_TIER = os.environ.get("DIGEST_SUMMARY_TIER", "expensive")
 DIGEST_FACTS_TIER   = os.environ.get("DIGEST_FACTS_TIER",   "normal")
@@ -1103,6 +1104,7 @@ async def proactive_check():
 bot_state.claude_loop        = _claude_loop
 bot_state.build_system_prompt = build_system_prompt
 bot_state.get_tier           = _tier
+bot_state.reminder_tier      = REMINDER_TIER
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 
