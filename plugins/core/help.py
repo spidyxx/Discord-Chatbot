@@ -29,11 +29,6 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 `@{n} zeig meine Erinnerungen` – listet deine aktiven Erinnerungen (🤖 = Aufgabe, kein Text)
 `@{n} lösche Erinnerung [ID]` – löscht eine bestimmte Erinnerung
 
-🗨️ **Zitate** *(alle Kanäle)*
-Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
-`@{n} speichere dieses Zitat: "Text"` – speichert direkt angegebenen Text
-`@{n} zeig ein Zitat` – zufälliges gespeichertes Zitat
-
 📋 **Zusammenfassung** *(alle Kanäle)*
 `@{n} fass zusammen` – fasst die letzten Nachrichten zusammen
 `@{n} fass dieses Video zusammen <youtube-url>` – fasst ein YouTube-Video zusammen
