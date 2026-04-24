@@ -54,16 +54,24 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
 )
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
-CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
-CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
-
-# Optional overrides for main channels — fall back to the defaults above if not set
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
-MAIN_MODEL          = os.environ.get("MAIN_MODEL") or CLAUDE_MODEL
 
+# ── Model slots ───────────────────────────────────────────────────────────────
 OLLAMA_BASE_URL     = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
-OLLAMA_MODEL        = os.environ.get("OLLAMA_MODEL", "")
-_LOCAL_TIERS        = {t.strip() for t in os.environ.get("LOCAL_TIERS", "").split(",") if t.strip()}
+LOCAL_MODEL         = os.environ.get("LOCAL_MODEL", "")
+CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
+NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
+EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
+
+# ── Tier assignments ──────────────────────────────────────────────────────────
+MAIN_TIER           = os.environ.get("MAIN_TIER",           "expensive")
+MENTION_TIER        = os.environ.get("MENTION_TIER",        "normal")
+CLASSIFY_TIER       = os.environ.get("CLASSIFY_TIER",       "cheap")
+EMOJI_TIER          = os.environ.get("EMOJI_TIER",          "cheap")
+MEMORY_FILTER_TIER  = os.environ.get("MEMORY_FILTER_TIER",  "cheap")
+PROACTIVE_TIER      = os.environ.get("PROACTIVE_TIER",      "expensive")
+DIGEST_SUMMARY_TIER = os.environ.get("DIGEST_SUMMARY_TIER", "expensive")
+DIGEST_FACTS_TIER   = os.environ.get("DIGEST_FACTS_TIER",   "normal")
 
 # Main channels: bot actively participates (debounced). Comma-separated IDs via MAIN_CHANNEL_IDS.
 # All other channels: bot only responds to @mentions.
@@ -154,7 +162,7 @@ status_index                      = 0
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 _ollama_client = None
-if OLLAMA_BASE_URL and OLLAMA_MODEL:
+if OLLAMA_BASE_URL and LOCAL_MODEL:
     from openai import AsyncOpenAI
     _ollama_client = AsyncOpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
 
@@ -372,7 +380,7 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
         + "\n\nAntworte nur mit kommaseparierten IDs der relevanten Einträge, oder NONE."
     )
     try:
-        text = await _simple_call("cheap", "", prompt, 100)
+        text = await _simple_call(MEMORY_FILTER_TIER, "", prompt, 100)
         if text.upper() == "NONE":
             return set()
         return {p.strip() for p in text.split(",") if p.strip()}
@@ -475,13 +483,14 @@ def _base_prompt(channel_id: int | None) -> str:
     return MAIN_SYSTEM_PROMPT if _is_main(channel_id) else SYSTEM_PROMPT
 
 def _tier(channel_id: int | None) -> str:
-    return "expensive" if _is_main(channel_id) else "normal"
+    return MAIN_TIER if _is_main(channel_id) else MENTION_TIER
 
 def _model_for_tier(tier: str) -> str:
+    if tier == "local":     return LOCAL_MODEL
     if tier == "cheap":     return CHEAP_MODEL
-    if tier == "normal":    return CLAUDE_MODEL
-    if tier == "expensive": return MAIN_MODEL
-    return CLAUDE_MODEL
+    if tier == "normal":    return NORMAL_MODEL
+    if tier == "expensive": return EXPENSIVE_MODEL
+    return NORMAL_MODEL
 
 def _to_text_messages(messages: list) -> list:
     """Strip image blocks and cache_control from messages for local LLM calls."""
@@ -504,7 +513,7 @@ def _to_text_messages(messages: list) -> list:
 async def _local_call(system: str, messages: list, max_tokens: int) -> str:
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
     response = await _ollama_client.chat.completions.create(
-        model=OLLAMA_MODEL, messages=openai_messages, max_tokens=max_tokens,
+        model=LOCAL_MODEL, messages=openai_messages, max_tokens=max_tokens,
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -650,7 +659,7 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
 async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier: str = "normal") -> str:
-    if tier in _LOCAL_TIERS:
+    if tier == "local":
         return await _local_call(system, messages, max_tokens)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
@@ -679,7 +688,7 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier
 async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
     """Single-turn LLM call without tool use."""
     messages = [{"role": "user", "content": user_content}]
-    if tier in _LOCAL_TIERS:
+    if tier == "local":
         return await _local_call(system, messages, max_tokens)
     response = await asyncio.to_thread(
         anthropic.messages.create,
@@ -879,7 +888,7 @@ async def classify_intent(text: str) -> tuple[str, str]:
     footer = _CLASSIFY_FOOTER + f"Aktuelle lokale Zeit ({TIMEZONE}): {datetime.now(TZ).strftime('%A %d.%m.%Y %H:%M')}"
     system = _CLASSIFY_PREAMBLE + plugin_lines + footer
 
-    raw = await _simple_call("cheap", system, text, 200)
+    raw = await _simple_call(CLASSIFY_TIER, system, text, 200)
 
     for prefix, intent in plugin_registry.intent_prefixes():
         if raw.upper().startswith(prefix.upper()):
@@ -892,7 +901,7 @@ async def get_emoji_reaction(message_text: str) -> str | None:
     if random.random() > EMOJI_REACTION_RATE:
         return None
     try:
-        result = await _simple_call("cheap", "Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.", message_text, 5)
+        result = await _simple_call(EMOJI_TIER, "Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.", message_text, 5)
         return None if result.upper() == "SKIP" else result
     except Exception:
         return None
@@ -945,7 +954,7 @@ async def daily_digest():
                 "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt: SKIP"
             ),
             [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
-            max_tokens=600, tier="expensive",
+            max_tokens=600, tier=DIGEST_SUMMARY_TIER,
         )
 
         if summary.upper().startswith("SKIP"):
@@ -961,7 +970,7 @@ async def daily_digest():
         week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
         month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
         fact_text = await _simple_call(
-            "normal",
+            DIGEST_FACTS_TIER,
             (
                 f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
                 "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
@@ -1067,7 +1076,7 @@ async def _try_proactive(channel_id: int):
         system,
         [{"role": "user", "content": f"Letzter Chatverlauf:\n{recent_text}"}],
         max_tokens=300,
-        tier="expensive",
+        tier=PROACTIVE_TIER,
     )
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
     if not reply or reply.upper().startswith("SKIP"):
@@ -1116,9 +1125,8 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Models — expensive: {MAIN_MODEL} | normal: {CLAUDE_MODEL} | cheap: {CHEAP_MODEL}")
-    if _LOCAL_TIERS:
-        log.info(f"Local LLM tiers: {_LOCAL_TIERS} → {OLLAMA_MODEL} @ {OLLAMA_BASE_URL}")
+    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else ""))
+    log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):

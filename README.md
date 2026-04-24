@@ -54,26 +54,38 @@ All configuration is via environment variables.
 | `SYSTEM_PROMPT` | Neutral assistant | System prompt for non-main channels |
 | `MAIN_SYSTEM_PROMPT` | Same as `SYSTEM_PROMPT` | System prompt for main channels (supports full personality) |
 
-### Channels & Models
+### Channels
 
 | Variable | Default | Description |
 |---|---|---|
 | `MAIN_CHANNEL_IDS` | *(none)* | Comma-separated channel IDs where the bot participates actively and uses memory |
-| `MAIN_MODEL` | Same as `CLAUDE_MODEL` | Model for the `expensive` tier (main channel responses, proactive, digest summary) |
-| `CLAUDE_MODEL` | `claude-sonnet-4-6` | Model for the `normal` tier (non-main channel responses, fact extraction) |
-| `CHEAP_MODEL` | `claude-haiku-4-5-20251001` | Model for the `cheap` tier (intent classification, memory filtering, emoji reactions) |
 
-### Local LLM (optional)
+### Model Slots
 
-Any tier can be routed to a local model via [Ollama](https://ollama.com) instead of the Claude API.
+Four named model slots. Any slot can be pointed at any model, including a local one.
 
 | Variable | Default | Description |
 |---|---|---|
+| `LOCAL_MODEL` | *(none)* | Ollama model name, e.g. `llama3.1:8b-instruct-q4_0`. Requires `OLLAMA_BASE_URL`. |
 | `OLLAMA_BASE_URL` | *(none)* | Ollama server URL, e.g. `http://192.168.1.100:11434` |
-| `OLLAMA_MODEL` | *(none)* | Model name in Ollama, e.g. `llama3.1:8b-instruct-q4_0` |
-| `LOCAL_TIERS` | *(none)* | Comma-separated tiers to route locally, e.g. `cheap` or `cheap,normal` |
+| `CHEAP_MODEL` | `claude-haiku-4-5-20251001` | Fast/cheap Claude model |
+| `NORMAL_MODEL` | `claude-sonnet-4-6` | Balanced Claude model |
+| `EXPENSIVE_MODEL` | `claude-sonnet-4-6` | High-quality Claude model (set to Opus to upgrade) |
 
-When `LOCAL_TIERS` is set, calls for those tiers go to Ollama; all other tiers continue to use the Claude API. Both variables must be set for local routing to activate.
+### Tier Assignments
+
+Each feature is assigned a tier (`local` / `cheap` / `normal` / `expensive`), which resolves to the model slot above.
+
+| Variable | Default | Feature |
+|---|---|---|
+| `MAIN_TIER` | `expensive` | Responses in main channels |
+| `MENTION_TIER` | `normal` | Responses in mention-only channels |
+| `CLASSIFY_TIER` | `cheap` | Intent classification |
+| `EMOJI_TIER` | `cheap` | Emoji reactions |
+| `MEMORY_FILTER_TIER` | `cheap` | Memory relevance filtering |
+| `PROACTIVE_TIER` | `expensive` | Proactive conversation starters |
+| `DIGEST_SUMMARY_TIER` | `expensive` | Daily digest summary |
+| `DIGEST_FACTS_TIER` | `normal` | Daily digest fact extraction |
 
 ### Behaviour
 

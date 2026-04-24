@@ -17,15 +17,27 @@ See `.env.example` for all optional variables.
 
 ## Models
 
-Three tiers map to env vars:
+Four model slots, each independently configurable:
 
-| Tier | Env var | Default | Used for |
-|---|---|---|---|
-| `expensive` | `MAIN_MODEL` | sonnet | Main channel responses, proactive, digest summary |
-| `normal` | `CLAUDE_MODEL` | sonnet | Non-main channel responses, fact extraction |
-| `cheap` | `CHEAP_MODEL` | haiku | Intent classification, memory filtering, emoji reactions |
+| Slot | Env var | Default |
+|---|---|---|
+| `local` | `LOCAL_MODEL` + `OLLAMA_BASE_URL` | *(disabled)* |
+| `cheap` | `CHEAP_MODEL` | haiku |
+| `normal` | `NORMAL_MODEL` | sonnet |
+| `expensive` | `EXPENSIVE_MODEL` | sonnet |
 
-Any tier can be routed to a local Ollama model via `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and `LOCAL_TIERS` (comma-separated tier names).
+Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`). Defaults:
+
+| Env var | Default | Feature |
+|---|---|---|
+| `MAIN_TIER` | `expensive` | Main channel responses |
+| `MENTION_TIER` | `normal` | Mention-only channel responses |
+| `CLASSIFY_TIER` | `cheap` | Intent classification |
+| `EMOJI_TIER` | `cheap` | Emoji reactions |
+| `MEMORY_FILTER_TIER` | `cheap` | Memory relevance filtering |
+| `PROACTIVE_TIER` | `expensive` | Proactive messages |
+| `DIGEST_SUMMARY_TIER` | `expensive` | Daily digest summary |
+| `DIGEST_FACTS_TIER` | `normal` | Daily digest fact extraction |
 
 ## Architecture
 
@@ -85,7 +97,7 @@ class MyPlugin(Plugin):
         # ctx.extra        — classifier payload (e.g. from "MY_INTENT: <extra>")
         # ctx.privileged   — True if user is admin/mod
         # ctx.classify_text — the text that was sent to classify_intent
-        # ctx.model_tier   — "cheap" | "normal" | "expensive" (set by plugin .cfg or channel default)
+        # ctx.model_tier   — "local" | "cheap" | "normal" | "expensive" (set by plugin .cfg or channel default)
         await ctx.message.reply("Hello from my plugin!")
 
 
@@ -102,7 +114,7 @@ def setup(registry) -> None:
 model_tier = expensive
 ```
 
-Valid values: `cheap` | `normal` | `expensive`. If no `.cfg` exists, the plugin uses the channel default (`expensive` for main channels, `normal` for others). The tier is available as `ctx.model_tier` and should be passed to `ctx.ask_claude(..., tier=ctx.model_tier)`.
+Valid values: `local` | `cheap` | `normal` | `expensive`. If no `.cfg` exists, the plugin uses the channel default (`expensive` for main channels, `normal` for others). The tier is available as `ctx.model_tier` and should be passed to `ctx.ask_claude(..., tier=ctx.model_tier)`.
 
 ### Rules for plugins
 

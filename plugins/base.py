@@ -65,7 +65,7 @@ class Plugin(ABC):
                                            # e.g. {"REMINDER": "REMINDER:"} for colon payloads
                                            # defaults to {label: label} if not specified
     intent_order: int = 50                 # lower = appears earlier in the injected prompt section
-    model_tier: str | None = None          # "cheap" | "normal" | "expensive" | None (channel default)
+    model_tier: str | None = None          # "local" | "cheap" | "normal" | "expensive" | None (channel default)
 
     def pre_classify(self, clean: str) -> tuple[str, str] | None:
         """Optional deterministic pre-classification (runs before Haiku).

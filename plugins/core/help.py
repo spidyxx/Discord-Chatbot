@@ -9,8 +9,8 @@ from version import BOT_VERSION
 _log = logging.getLogger(__name__)
 
 _BOT_NAME        = os.environ.get("BOT_NAME",        "Marvin")
-_MAIN_MODEL      = os.environ.get("MAIN_MODEL",      os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"))
-_CLAUDE_MODEL    = os.environ.get("CLAUDE_MODEL",    "claude-sonnet-4-6")
+_EXPENSIVE_MODEL = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
+_NORMAL_MODEL    = os.environ.get("NORMAL_MODEL",    "claude-sonnet-4-6")
 _COOLDOWN        = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 
 
@@ -53,7 +53,7 @@ Nachricht antworten + `@{n} merke dieses Zitat` – speichert die Nachricht
 `@{n} speichere was heute passiert ist` – Session als strukturierte Fakten speichern
 
 ⚙️ **Bot-Konfiguration**
-Hauptkanal-Modell: `{_MAIN_MODEL}` · Anderer-Kanal-Modell: `{_CLAUDE_MODEL}`
+Hauptkanal-Modell: `{_EXPENSIVE_MODEL}` · Anderer-Kanal-Modell: `{_NORMAL_MODEL}`
 Cooldown: `{_COOLDOWN}s`
 
 `v{BOT_VERSION}`"""

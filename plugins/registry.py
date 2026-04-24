@@ -11,7 +11,7 @@ from .base import MessageContext, Plugin
 
 _log = logging.getLogger(__name__)
 
-_VALID_TIERS = {"cheap", "normal", "expensive"}
+_VALID_TIERS = {"local", "cheap", "normal", "expensive"}
 
 
 def _apply_cfg(cfg_path: Path, plugins: list[Plugin]) -> None:

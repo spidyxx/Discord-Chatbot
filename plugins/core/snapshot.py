@@ -1,6 +1,5 @@
 """Snapshot plugin — SNAPSHOT intent (saves session as structured memory facts)."""
 
-import asyncio
 import logging
 import os
 from datetime import datetime, timedelta, timezone
@@ -14,7 +13,6 @@ _log = logging.getLogger(__name__)
 
 _TZ          = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
 _BOT_NAME    = os.environ.get("BOT_NAME", "Marvin")
-_MODEL       = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 _MEMORY_FILE = Path(os.environ.get("DATA_DIR", "/app/data")) / "memory.json"
 
 
@@ -102,35 +100,29 @@ class SnapshotPlugin(Plugin):
             today      = datetime.now(_TZ)
             week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
             month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
-            client = bot_state.anthropic_client
-            response = await asyncio.to_thread(
-                client.messages.create,
-                model=_MODEL,
-                max_tokens=2000,
-                system=(
-                    f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {_BOT_NAME}.\n\n"
-                    "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
-                    f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
-                    f"USER | <Anzeigename exakt wie im Chat> | <echte Namen/Spitznamen kommagetrennt oder NONE> | <Identitätsfakt>\n"
-                    f"FLAVOR | <Anzeigename> | <Aliase oder NONE> | <Persönlichkeitsfakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
-                    f"GENERAL | <Fakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n\n"
-                    f"Ablaufdaten (heute = {today.strftime('%d.%m.%Y')}):\n"
-                    f"- Tagesereignisse, kurzfristige Pläne, aktuelle Stimmung → {week_date}\n"
-                    f"- Laufende Projekte, aktuelle Situation → {month_date}\n"
-                    f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
-                    "Regeln:\n"
-                    "- Eine Zeile = eine Aussage. Nur gesicherte Fakten aus dem Chat, keine Interpretation.\n"
-                    "- BOT: Titel, Rollen, Besitztümer, Verhaltensregeln, Dynamiken mit Usern.\n"
-                    "- USER: Nur für neue Nutzer oder neu entdeckte Aliase. Max. einen USER-Eintrag pro Nutzer.\n"
-                    "- FLAVOR: Persönlichkeit, Beziehungen, Vorlieben, Erlebnisse mit Wiederholungspotenzial.\n"
-                    "- NICHT speichern: Smalltalk, Einzelereignisse ohne Relevanz für spätere Gespräche, "
-                    "Fakten die in einer Woche sicher nicht mehr zutreffen.\n"
-                    "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
-                    + _known_identities_block()
-                ),
-                messages=[{"role": "user", "content": "Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
+            raw_facts = await ctx.ask_claude(
+                f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {_BOT_NAME}.\n\n"
+                "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
+                f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                f"USER | <Anzeigename exakt wie im Chat> | <echte Namen/Spitznamen kommagetrennt oder NONE> | <Identitätsfakt>\n"
+                f"FLAVOR | <Anzeigename> | <Aliase oder NONE> | <Persönlichkeitsfakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
+                f"GENERAL | <Fakt> | <Ablaufdatum DD.MM.YYYY oder NONE>\n\n"
+                f"Ablaufdaten (heute = {today.strftime('%d.%m.%Y')}):\n"
+                f"- Tagesereignisse, kurzfristige Pläne, aktuelle Stimmung → {week_date}\n"
+                f"- Laufende Projekte, aktuelle Situation → {month_date}\n"
+                f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
+                "Regeln:\n"
+                "- Eine Zeile = eine Aussage. Nur gesicherte Fakten aus dem Chat, keine Interpretation.\n"
+                "- BOT: Titel, Rollen, Besitztümer, Verhaltensregeln, Dynamiken mit Usern.\n"
+                "- USER: Nur für neue Nutzer oder neu entdeckte Aliase. Max. einen USER-Eintrag pro Nutzer.\n"
+                "- FLAVOR: Persönlichkeit, Beziehungen, Vorlieben, Erlebnisse mit Wiederholungspotenzial.\n"
+                "- NICHT speichern: Smalltalk, Einzelereignisse ohne Relevanz für spätere Gespräche, "
+                "Fakten die in einer Woche sicher nicht mehr zutreffen.\n"
+                "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
+                + _known_identities_block(),
+                [{"role": "user", "content": "Chatverlauf der letzten 24h:\n" + "\n".join(lines)}],
+                max_tokens=2000, tier=ctx.model_tier,
             )
-            raw_facts = response.content[0].text.strip()
             parsed    = _parse_snapshot_facts(raw_facts)
             if not parsed:
                 await ctx.message.reply("Konnte keine strukturierten Fakten extrahieren. Versuch's nochmal.")
