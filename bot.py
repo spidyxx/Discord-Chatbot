@@ -473,6 +473,12 @@ def _base_prompt(channel_id: int | None) -> str:
 def _model(channel_id: int | None) -> str:
     return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
 
+def _resolve_model(tier: str | None, channel_id: int | None) -> str:
+    if tier == "cheap":     return CHEAP_MODEL
+    if tier == "normal":    return CLAUDE_MODEL
+    if tier == "expensive": return MAIN_MODEL
+    return _model(channel_id)
+
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
@@ -1279,7 +1285,7 @@ async def on_message(message: discord.Message):
                 privileged=privileged, classify_text=classify_text,
                 ask_claude=_claude_loop,
                 system_prompt=build_system_prompt(message.channel.id),
-                model=_model(message.channel.id),
+                model=_resolve_model(plugin_registry.model_tier_for(intent), message.channel.id),
                 add_memory_fn=add_memory,
                 resolve_mentions_fn=resolve_mentions,
                 list_memories_fn=list_memories,
