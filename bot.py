@@ -61,6 +61,10 @@ CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
 MAIN_MODEL          = os.environ.get("MAIN_MODEL") or CLAUDE_MODEL
 
+OLLAMA_BASE_URL     = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
+OLLAMA_MODEL        = os.environ.get("OLLAMA_MODEL", "")
+_LOCAL_TIERS        = {t.strip() for t in os.environ.get("LOCAL_TIERS", "").split(",") if t.strip()}
+
 # Main channels: bot actively participates (debounced). Comma-separated IDs via MAIN_CHANNEL_IDS.
 # All other channels: bot only responds to @mentions.
 MAIN_CHANNEL_IDS: set[int] = set()
@@ -148,6 +152,12 @@ _proactive_last_sent: dict[int, float]  = {}      # per-channel timestamp of las
 status_index                      = 0
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+_ollama_client = None
+if OLLAMA_BASE_URL and OLLAMA_MODEL:
+    from openai import AsyncOpenAI
+    _ollama_client = AsyncOpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
+
 intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
@@ -362,18 +372,12 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
         + "\n\nAntworte nur mit kommaseparierten IDs der relevanten Einträge, oder NONE."
     )
     try:
-        resp = await asyncio.to_thread(
-            anthropic.messages.create,
-            model=CHEAP_MODEL,
-            max_tokens=100,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = resp.content[0].text.strip()
+        text = await _simple_call("cheap", "", prompt, 100)
         if text.upper() == "NONE":
             return set()
         return {p.strip() for p in text.split(",") if p.strip()}
     except Exception as e:
-        log.warning(f"Haiku memory filter failed: {e}")
+        log.warning(f"Memory filter failed: {e}")
         return set()
 
 
@@ -470,14 +474,39 @@ def _is_main(channel_id: int | None) -> bool:
 def _base_prompt(channel_id: int | None) -> str:
     return MAIN_SYSTEM_PROMPT if _is_main(channel_id) else SYSTEM_PROMPT
 
-def _model(channel_id: int | None) -> str:
-    return MAIN_MODEL if _is_main(channel_id) else CLAUDE_MODEL
+def _tier(channel_id: int | None) -> str:
+    return "expensive" if _is_main(channel_id) else "normal"
 
-def _resolve_model(tier: str | None, channel_id: int | None) -> str:
+def _model_for_tier(tier: str) -> str:
     if tier == "cheap":     return CHEAP_MODEL
     if tier == "normal":    return CLAUDE_MODEL
     if tier == "expensive": return MAIN_MODEL
-    return _model(channel_id)
+    return CLAUDE_MODEL
+
+def _to_text_messages(messages: list) -> list:
+    """Strip image blocks and cache_control from messages for local LLM calls."""
+    result = []
+    for msg in messages:
+        content = msg["content"]
+        if isinstance(content, str):
+            result.append({"role": msg["role"], "content": content})
+        elif isinstance(content, list):
+            text = " ".join(
+                b["text"] if isinstance(b, dict) else getattr(b, "text", "")
+                for b in content
+                if (isinstance(b, dict) and b.get("type") == "text") or
+                   (hasattr(b, "type") and b.type == "text")
+            ).strip()
+            if text:
+                result.append({"role": msg["role"], "content": text})
+    return result
+
+async def _local_call(system: str, messages: list, max_tokens: int) -> str:
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    response = await _ollama_client.chat.completions.create(
+        model=OLLAMA_MODEL, messages=openai_messages, max_tokens=max_tokens,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
@@ -620,15 +649,16 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
 
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
-async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, model: str = None) -> str:
-    _model = model or CLAUDE_MODEL
+async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier: str = "normal") -> str:
+    if tier in _LOCAL_TIERS:
+        return await _local_call(system, messages, max_tokens)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     while True:
         response = await asyncio.to_thread(
             anthropic.messages.create,
-            model=_model, max_tokens=max_tokens,
+            model=_model_for_tier(tier), max_tokens=max_tokens,
             system=cached_system, tools=TOOLS, messages=messages,
         )
         u = response.usage
@@ -645,6 +675,18 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, mode
             for b in response.content if b.type == "tool_use"
         ]})
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
+
+async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
+    """Single-turn LLM call without tool use."""
+    messages = [{"role": "user", "content": user_content}]
+    if tier in _LOCAL_TIERS:
+        return await _local_call(system, messages, max_tokens)
+    response = await asyncio.to_thread(
+        anthropic.messages.create,
+        model=_model_for_tier(tier), max_tokens=max_tokens,
+        system=system, messages=messages,
+    )
+    return response.content[0].text.strip()
 
 def resolve_mentions(content: str, mentions: list) -> str:
     """Replace raw <@id> / <@!id> Discord mention syntax with display names."""
@@ -707,7 +749,7 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
         build_system_prompt(channel_id, memory_block=mem_block),
-        messages, model=_model(channel_id)
+        messages, tier=_tier(channel_id),
     )
     return reply
 
@@ -728,7 +770,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     else:
         user_content = text
     reply = await _claude_loop(system, [{"role": "user", "content": user_content}],
-        model=_model(channel_id))
+        tier=_tier(channel_id))
     # Strip any stray trailing SKIP Claude might append to an otherwise real reply
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
     if not reply or reply.upper().startswith("SKIP"):
@@ -837,13 +879,7 @@ async def classify_intent(text: str) -> tuple[str, str]:
     footer = _CLASSIFY_FOOTER + f"Aktuelle lokale Zeit ({TIMEZONE}): {datetime.now(TZ).strftime('%A %d.%m.%Y %H:%M')}"
     system = _CLASSIFY_PREAMBLE + plugin_lines + footer
 
-    response = await asyncio.to_thread(
-        anthropic.messages.create,
-        model=CHEAP_MODEL, max_tokens=200,
-        system=system,
-        messages=[{"role": "user", "content": text}],
-    )
-    raw = response.content[0].text.strip()
+    raw = await _simple_call("cheap", system, text, 200)
 
     for prefix, intent in plugin_registry.intent_prefixes():
         if raw.upper().startswith(prefix.upper()):
@@ -856,13 +892,7 @@ async def get_emoji_reaction(message_text: str) -> str | None:
     if random.random() > EMOJI_REACTION_RATE:
         return None
     try:
-        response = await asyncio.to_thread(
-            anthropic.messages.create,
-            model=CHEAP_MODEL, max_tokens=5,
-            system="Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.",
-            messages=[{"role": "user", "content": message_text}],
-        )
-        result = response.content[0].text.strip()
+        result = await _simple_call("cheap", "Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.", message_text, 5)
         return None if result.upper() == "SKIP" else result
     except Exception:
         return None
@@ -915,7 +945,7 @@ async def daily_digest():
                 "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt: SKIP"
             ),
             [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
-            max_tokens=600, model=_model(channel_id),
+            max_tokens=600, tier="expensive",
         )
 
         if summary.upper().startswith("SKIP"):
@@ -930,11 +960,9 @@ async def daily_digest():
         today      = datetime.now(TZ)
         week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
         month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
-        fact_resp = await asyncio.to_thread(
-            anthropic.messages.create,
-            model=CLAUDE_MODEL,
-            max_tokens=2000,
-            system=(
+        fact_text = await _simple_call(
+            "normal",
+            (
                 f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
                 "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
                 f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
@@ -955,9 +983,10 @@ async def daily_digest():
                 "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
                 + _known_identities_block()
             ),
-            messages=[{"role": "user", "content": "Chatverlauf:\n" + context}],
+            "Chatverlauf:\n" + context,
+            2000,
         )
-        parsed = _parse_snapshot_facts(fact_resp.content[0].text.strip())
+        parsed = _parse_snapshot_facts(fact_text)
         for fact_data in parsed:
             add_memory(
                 fact        = fact_data["content"],
@@ -1038,7 +1067,7 @@ async def _try_proactive(channel_id: int):
         system,
         [{"role": "user", "content": f"Letzter Chatverlauf:\n{recent_text}"}],
         max_tokens=300,
-        model=_model(channel_id),
+        tier="expensive",
     )
     reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
     if not reply or reply.upper().startswith("SKIP"):
@@ -1087,7 +1116,9 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Main channel model: {MAIN_MODEL} | Other channel model: {CLAUDE_MODEL}")
+    log.info(f"Models — expensive: {MAIN_MODEL} | normal: {CLAUDE_MODEL} | cheap: {CHEAP_MODEL}")
+    if _LOCAL_TIERS:
+        log.info(f"Local LLM tiers: {_LOCAL_TIERS} → {OLLAMA_MODEL} @ {OLLAMA_BASE_URL}")
     log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
@@ -1285,7 +1316,7 @@ async def on_message(message: discord.Message):
                 privileged=privileged, classify_text=classify_text,
                 ask_claude=_claude_loop,
                 system_prompt=build_system_prompt(message.channel.id),
-                model=_resolve_model(plugin_registry.model_tier_for(intent), message.channel.id),
+                model_tier=plugin_registry.model_tier_for(intent) or _tier(message.channel.id),
                 add_memory_fn=add_memory,
                 resolve_mentions_fn=resolve_mentions,
                 list_memories_fn=list_memories,

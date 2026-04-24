@@ -69,7 +69,7 @@ class SummaryPlugin(Plugin):
                 "\nFasse die folgenden Discord-Nachrichten kurz in deinem typischen Stil zusammen. "
                 "Konzentriere dich auf wichtige Themen und interessante Momente, nicht auf jede einzelne Nachricht.",
                 [{"role": "user", "content": "\n".join(lines)}],
-                max_tokens=600, model=ctx.model,
+                max_tokens=600, tier=ctx.model_tier,
             )
         await ctx.message.reply(summary)
 

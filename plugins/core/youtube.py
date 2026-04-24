@@ -78,7 +78,7 @@ class YoutubePlugin(Plugin):
                 "\nFasse das folgende YouTube-Video-Transkript in deinem typischen Stil zusammen. "
                 "Gib die wichtigsten Punkte und Erkenntnisse wieder. Ziel: ca. 200–300 Wörter – prägnant, aber vollständig abgeschlossen.",
                 [{"role": "user", "content": f"Transkript:\n{transcript}"}],
-                max_tokens=1500, model=ctx.model,
+                max_tokens=1500, tier=ctx.model_tier,
             )
         chunks = [summary[i:i+2000] for i in range(0, len(summary), 2000)]
         await ctx.message.reply(chunks[0])

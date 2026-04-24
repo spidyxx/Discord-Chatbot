@@ -43,9 +43,9 @@ class MessageContext:
     privileged:    bool       = False    # True if user is admin/mod (checked in on_message)
     classify_text: str        = ""       # text that was sent to classify_intent
     # Claude access — set by bot.py dispatch; None when running standalone tests
-    ask_claude:         object = None    # Callable: _claude_loop(system, messages, max_tokens, model)
+    ask_claude:         object = None    # Callable: _claude_loop(system, messages, max_tokens, tier)
     system_prompt:      str    = ""      # pre-built system prompt for this channel
-    model:              str    = ""      # model string for this channel
+    model_tier:         str    = ""      # tier for this context: "cheap" | "normal" | "expensive"
     add_memory_fn:        object = None   # Callable: add_memory(fact, added_by, user_id, ...)
     resolve_mentions_fn:  object = None  # Callable: resolve_mentions(content, mentions)
     list_memories_fn:     object = None  # Callable: list_memories() -> list
