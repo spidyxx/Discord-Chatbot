@@ -8,7 +8,6 @@ A self-hosted Discord bot that uses the Anthropic Claude API to participate in s
 - **Memory system** *(main channels only)* — Stores and recalls facts about server members; relevance-filtered so only contextually matching memories are injected
 - **YouTube summarization** — Summarize any YouTube video by sharing or replying to a URL
 - **Reminders** — One-time and recurring reminders with natural language scheduling
-- **Quotes** — Save and retrieve random quotes from the server
 - **Chat summary** — Summarize what happened since you were last online
 - **Session snapshot** — Save today's personality, running gags, and dynamics as a memory entry
 - **Daily digest** — Automatic nightly summary posted to configured channels
@@ -122,7 +121,7 @@ Each feature is assigned a tier (`local` / `cheap` / `normal` / `expensive`), wh
 
 | Variable | Default | Description |
 |---|---|---|
-| `DATA_DIR` | `/app/data` | Directory for persistent data (memories, quotes, reminders) |
+| `DATA_DIR` | `/app/data` | Directory for persistent data (memories, reminders) |
 | `LOG_DIR` | `/app/logs` | Directory for log files (rotated daily, 30-day retention) |
 | `LOG_LEVEL` | `INFO` | Log verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 
@@ -147,13 +146,6 @@ All commands require an @mention unless the bot addresses you directly.
 | `@Marvin erinnere uns jeden Freitag um 20 Uhr an ...` | Recurring reminder |
 | `@Marvin zeig meine Erinnerungen` | List your active reminders |
 | `@Marvin lösche Erinnerung [ID]` | Delete a reminder by ID |
-
-### Quotes
-
-| Command | Description |
-|---|---|
-| Reply to a message + `@Marvin merke dieses Zitat` | Save the quoted message |
-| `@Marvin zeig ein Zitat` | Show a random saved quote |
 
 ### Summaries
 
