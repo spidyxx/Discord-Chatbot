@@ -120,7 +120,6 @@ PROACTIVE_CHECK_MINUTES   = int(os.environ.get("PROACTIVE_CHECK_MINUTES", "15"))
 
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
-QUOTES_FILE    = DATA_DIR / "quotes.json"
 
 STATUSES = [
     "Leidet still",
@@ -541,22 +540,6 @@ def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -
         if mem:
             return mem + "\n\n" + base
     return base
-
-# ── Quotes ───────────────────────────────────────────────────────────────────
-
-def load_quotes() -> list: return _read(QUOTES_FILE)
-def save_quotes(q: list):  _write(QUOTES_FILE, q)
-
-def add_quote(content: str, author: str, added_by: str):
-    q = load_quotes()
-    q.append({"content": content, "author": author, "added_by": added_by,
-               "date": datetime.now().strftime("%d.%m.%Y")})
-    save_quotes(q)
-    log.info(f"Quote saved by {added_by}: '{content[:60]}'")
-
-def get_random_quote() -> dict | None:
-    q = load_quotes()
-    return random.choice(q) if q else None
 
 # ── Images ───────────────────────────────────────────────────────────────────
 
@@ -1142,7 +1125,7 @@ async def on_ready():
         log.info("No main channels configured — responding to @mentions only")
     log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
-    log.info(f"Memories: {len(load_memories())} | Quotes: {len(load_quotes())}")
+    log.info(f"Memories: {len(load_memories())}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
     """Evaluate whether to respond in a main channel.
@@ -1331,7 +1314,7 @@ async def on_message(message: discord.Message):
             ref_content = (message.reference.resolved.content or "").strip()
             # Only append referenced message if it contains a URL — needed so the
             # classifier can detect YOUTUBE_SUMMARY when the link is in the replied-to
-            # message. Appending unconditionally caused false QUOTE_SAVE hits.
+            # message. Appending unconditionally caused false positive classification.
             if ref_content and _URL_RE.search(ref_content):
                 classify_text = f"{clean}\n[Benutzer antwortet auf: {ref_content[:300]}]"
 
