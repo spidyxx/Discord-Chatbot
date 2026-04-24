@@ -1101,6 +1101,7 @@ bot_state.claude_loop        = _claude_loop
 bot_state.build_system_prompt = build_system_prompt
 bot_state.get_tier           = _tier
 bot_state.reminder_tier      = REMINDER_TIER
+bot_state.main_channel_ids   = MAIN_CHANNEL_IDS
 
 # ── Discord ───────────────────────────────────────────────────────────────────
 

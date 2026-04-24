@@ -65,8 +65,9 @@ async def _fire(entry: dict):
     user_id = entry["user_id"]
     message = entry["message"]
     if entry.get("mode") == "prompt":
+        main_channel_id = next(iter(bot_state.main_channel_ids), entry["channel_id"])
         reply = await bot_state.claude_loop(
-            bot_state.build_system_prompt(entry["channel_id"]),
+            bot_state.build_system_prompt(main_channel_id),
             [{"role": "user", "content": message}],
             tier=bot_state.reminder_tier,
         )

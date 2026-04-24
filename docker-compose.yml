@@ -3,6 +3,8 @@ services:
     build: .
     container_name: discord-chatbot
     restart: unless-stopped
+    environment:
+      - TZ=${TIMEZONE:-Europe/Berlin}
     env_file:
       - .env
     volumes:
