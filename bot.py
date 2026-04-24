@@ -784,10 +784,8 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     ) if _is_main(channel_id) else ""
     system = (
         build_system_prompt(channel_id, memory_block=mem_block) + "\n\n"
-        "Du liest Nachrichten in einem Discord-Kanal. Entscheide ob du antwortest:\n"
-        f"- Wird dein Name ({BOT_NAME}) direkt erwähnt oder bist du direkt angesprochen? → antworte immer, auch kurz (\"ja\", \"nein\", \"hmm...\").\n"
-        "- Kannst du sonst echten Mehrwert liefern? → antworte.\n"
-        "- Alles andere → antworte mit exakt: SKIP"
+        "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
+        "Sonst antworte mit exakt: SKIP"
     )
     text = f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"
     if image_blocks:
@@ -1224,6 +1222,15 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             if question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
+                reply = await ask_claude(
+                    last_msg.content, last_msg.author.display_name,
+                    image_blocks=image_blocks or None,
+                    channel_id=channel_id, before_id=last_msg.id,
+                )
+                respond = bool(reply)
+            elif BOT_NAME.lower() in last_msg.content.lower():
+                # Name mentioned without @mention — treat as direct address, skip evaluation
+                log.info(f"Channel #{channel_id}: bot name in message — skipping evaluation")
                 reply = await ask_claude(
                     last_msg.content, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
