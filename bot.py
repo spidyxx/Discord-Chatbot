@@ -727,11 +727,16 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     channel = bot.get_channel(channel_id)
     if not channel:
         return []
-    kwargs = {"limit": CONTEXT_WINDOW, "oldest_first": True}
+    # Fetch newest-first (discord.py default with before=), then reverse for chronological order.
+    # oldest_first=True with before= fetches from the channel's beginning, not the recent end.
+    kwargs = {"limit": CONTEXT_WINDOW}
     if before_id is not None:
         kwargs["before"] = discord.Object(id=before_id)
-    messages = []
+    raw = []
     async for msg in channel.history(**kwargs):
+        raw.append(msg)
+    messages = []
+    for msg in reversed(raw):
         ts = _msg_ts(msg.created_at)
         if msg.author == bot.user:
             messages.append({"role": "assistant", "content": msg.content or ""})
