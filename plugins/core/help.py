@@ -9,9 +9,17 @@ from version import BOT_VERSION
 _log = logging.getLogger(__name__)
 
 _BOT_NAME        = os.environ.get("BOT_NAME",        "Marvin")
-_EXPENSIVE_MODEL = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
-_NORMAL_MODEL    = os.environ.get("NORMAL_MODEL",    "claude-sonnet-4-6")
 _COOLDOWN        = int(os.environ.get("COOLDOWN_SECONDS", "120"))
+
+def _model(tier_var: str, tier_default: str, model_var: str, model_default: str) -> str:
+    tier = os.environ.get(tier_var, tier_default)
+    models = {
+        "local":     os.environ.get("LOCAL_MODEL",     ""),
+        "cheap":     os.environ.get("CHEAP_MODEL",     "claude-haiku-4-5-20251001"),
+        "normal":    os.environ.get("NORMAL_MODEL",    "claude-sonnet-4-6"),
+        "expensive": os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6"),
+    }
+    return f"{models.get(tier, tier)} ({tier})"
 
 
 def build_help_text() -> str:
@@ -48,8 +56,14 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 `@{n} speichere was heute passiert ist` – Session als strukturierte Fakten speichern
 
 ⚙️ **Bot-Konfiguration**
-Hauptkanal-Modell: `{_EXPENSIVE_MODEL}` · Anderer-Kanal-Modell: `{_NORMAL_MODEL}`
 Cooldown: `{_COOLDOWN}s`
+Hauptkanal: `{_model('MAIN_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}`
+Mention-Kanal: `{_model('MENTION_TIER', 'normal', 'NORMAL_MODEL', 'claude-sonnet-4-6')}`
+Klassifizierung: `{_model('CLASSIFY_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
+Emoji: `{_model('EMOJI_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
+Memory-Filter: `{_model('MEMORY_FILTER_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
+Proaktiv: `{_model('PROACTIVE_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}`
+Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}` / `{_model('DIGEST_FACTS_TIER', 'normal', 'NORMAL_MODEL', 'claude-sonnet-4-6')}`
 
 `v{BOT_VERSION}`"""
 
