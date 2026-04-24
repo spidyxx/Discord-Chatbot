@@ -494,12 +494,16 @@ def _model_for_tier(tier: str) -> str:
     return NORMAL_MODEL
 
 def _to_text_messages(messages: list) -> list:
-    """Strip image blocks and cache_control from messages for local LLM calls."""
+    """Flatten Anthropic-style messages for local LLM calls.
+
+    Strips image blocks and cache_control. Merges consecutive same-role
+    messages, which the OpenAI chat format does not allow.
+    """
     result = []
     for msg in messages:
         content = msg["content"]
         if isinstance(content, str):
-            result.append({"role": msg["role"], "content": content})
+            text = content
         elif isinstance(content, list):
             text = " ".join(
                 b["text"] if isinstance(b, dict) else getattr(b, "text", "")
@@ -507,8 +511,14 @@ def _to_text_messages(messages: list) -> list:
                 if (isinstance(b, dict) and b.get("type") == "text") or
                    (hasattr(b, "type") and b.type == "text")
             ).strip()
-            if text:
-                result.append({"role": msg["role"], "content": text})
+        else:
+            continue
+        if not text:
+            continue
+        if result and result[-1]["role"] == msg["role"]:
+            result[-1]["content"] += "\n" + text
+        else:
+            result.append({"role": msg["role"], "content": text})
     return result
 
 async def _local_call(system: str, messages: list, max_tokens: int) -> str:
