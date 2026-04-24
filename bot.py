@@ -740,10 +740,11 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
-    # Truncate older messages to reduce their influence; recent messages stay at full length
+    # Truncate older *user* messages to reduce their influence on the response.
+    # Assistant messages are never truncated — the bot must always see what it previously said.
     cutoff = len(messages) - RECENT_WINDOW
     for i, m in enumerate(messages):
-        if i < cutoff and isinstance(m["content"], str) and len(m["content"]) > 80:
+        if i < cutoff and m["role"] == "user" and isinstance(m["content"], str) and len(m["content"]) > 80:
             messages[i] = {**m, "content": m["content"][:80] + "…"}
     return messages
 
@@ -774,14 +775,10 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     )
     return reply
 
-async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> tuple[bool, str]:
-    mem_block = await build_memory_block(
-        message_context = user_message,
-        full_context    = f"{recent_context}\n{user_message}",
-        current_speaker = username,
-    ) if _is_main(channel_id) else ""
+async def should_respond(user_message: str, username: str, recent_context: str, channel_id: int = None, image_blocks: list = None) -> bool:
+    """Decide whether to respond at all. Uses flat recent_context — cheap and fast."""
     system = (
-        build_system_prompt(channel_id, memory_block=mem_block) + "\n\n"
+        build_system_prompt(channel_id) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
         "Sonst antworte mit exakt: SKIP"
     )
@@ -792,11 +789,8 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
         user_content = text
     reply = await _claude_loop(system, [{"role": "user", "content": user_content}],
         tier=_tier(channel_id))
-    # Strip any stray trailing SKIP Claude might append to an otherwise real reply
-    reply = re.sub(r'\s*\bSKIP\b\s*$', '', reply, flags=re.IGNORECASE).strip()
-    if not reply or reply.upper().startswith("SKIP"):
-        return False, ""
-    return True, reply
+    reply = reply.strip()
+    return bool(reply) and not reply.upper().startswith("SKIP")
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -1240,11 +1234,18 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 )
                 respond = bool(reply)
             else:
-                respond, reply = await should_respond(
+                respond = await should_respond(
                     last_msg.content, last_msg.author.display_name, recent_context,
                     channel_id=channel_id, image_blocks=image_blocks or None,
                 )
-            log.info(f"Channel #{channel_id}: evaluation → {'RESPOND: ' + reply[:80] if respond else 'SKIP'}")
+                if respond:
+                    reply = await ask_claude(
+                        last_msg.content, last_msg.author.display_name,
+                        image_blocks=image_blocks or None,
+                        channel_id=channel_id, before_id=last_msg.id,
+                    )
+                    respond = bool(reply)
+            log.info(f"Channel #{channel_id}: evaluation → {'RESPOND: ' + (reply or '')[:80] if respond else 'SKIP'}")
 
             # New message(s) arrived while we were generating — re-read and try again
             if _channel_pending.get(channel_id):
