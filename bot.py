@@ -327,7 +327,11 @@ def _format_memory_sections(bot_facts, identity_facts, flavor_facts, general_fac
         for subj, facts in by_subject.items():
             aliases   = sorted(alias_map.get(subj, set()))
             alias_str = f" ({', '.join(aliases)})" if aliases else ""
-            lines.append(f"- {subj}{alias_str}: {'; '.join(f['content'] for f in facts)}")
+            facts_str = "; ".join(
+                f'{f["content"]} [{f["date"]}]' if f.get("date") else f["content"]
+                for f in facts
+            )
+            lines.append(f"- {subj}{alias_str}: {facts_str}")
         sections.append("Bekannte Nutzer:\n" + "\n".join(lines))
 
     if flavor_facts:
@@ -336,14 +340,21 @@ def _format_memory_sections(bot_facts, identity_facts, flavor_facts, general_fac
             by_subject.setdefault(m.get("subject") or "?", []).append(m)
         lines = []
         for subj, facts in by_subject.items():
-            lines.append(f"- {subj}: {'; '.join(f['content'] for f in facts)}")
+            facts_str = "; ".join(
+                f'{f["content"]} [{f["date"]}]' if f.get("date") else f["content"]
+                for f in facts
+            )
+            lines.append(f"- {subj}: {facts_str}")
         sections.append(
             "Persönliche Details – nur einfließen lassen wenn natürlich, nicht erzwingen:\n"
             + "\n".join(lines)
         )
 
     if general_facts:
-        lines = [f"- {m['content']}" for m in general_facts]
+        lines = [
+            f'- {m["content"]} [{m["date"]}]' if m.get("date") else f'- {m["content"]}'
+            for m in general_facts
+        ]
         sections.append("Weiteres Hintergrundwissen:\n" + "\n".join(lines))
 
     if not sections:
