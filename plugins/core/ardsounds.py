@@ -10,7 +10,7 @@ from pathlib import Path
 
 import aiohttp
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, split_message
 
 _log = logging.getLogger(__name__)
 
@@ -132,24 +132,6 @@ async def _transcribe(path: str, progress: dict) -> str | None:
         return None
 
 
-def _split_message(text: str, limit: int = 2000) -> list[str]:
-    if len(text) <= limit:
-        return [text]
-    chunks = []
-    while len(text) > limit:
-        cut = max(
-            (text.rfind(m, 0, limit) + len(m)
-             for m in ('. ', '! ', '? ', '\n')
-             if text.rfind(m, 0, limit) >= 0),
-            default=limit,
-        )
-        chunks.append(text[:cut].rstrip())
-        text = text[cut:].lstrip()
-    if text:
-        chunks.append(text)
-    return chunks
-
-
 def _fmt_eta(elapsed: float, processed: float, total: float) -> str:
     if processed <= 0:
         return "unbekannt"
@@ -254,7 +236,7 @@ class ArdSoundsPlugin(Plugin):
             tier=ctx.model_tier,
         )
 
-        chunks = _split_message(summary)
+        chunks = split_message(summary)
         await status.edit(content=chunks[0])
         for chunk in chunks[1:]:
             await ctx.message.channel.send(chunk)
