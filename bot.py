@@ -1337,6 +1337,11 @@ async def on_message(message: discord.Message):
                 pass
 
         image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
+        if message.reference and message.reference.resolved:
+            ref = message.reference.resolved
+            ref_images = await fetch_images(ref.attachments, ref.embeds, ref.content or "")
+            if ref_images:
+                image_blocks = ref_images + image_blocks
         has_images   = bool(image_blocks)
         privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
 

@@ -20,8 +20,7 @@ ssh "$UNRAID" "
     --env-file .env \
     -e TZ=\$(grep '^TIMEZONE=' .env | cut -d= -f2 || echo 'Europe/Berlin') \
     --user 99:100 \
-    -v '/mnt/user/appdata/Discord_Chatbot/data:/app/data' \
-    -v '/mnt/user/appdata/Discord_Chatbot/logs:/app/logs' \
+    -v '/mnt/cache/appdata/Discord_Chatbot:/mnt/cache/appdata/Discord_Chatbot' \
     discord_chatbot:latest
 "
 
