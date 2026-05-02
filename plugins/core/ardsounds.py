@@ -16,7 +16,8 @@ _log = logging.getLogger(__name__)
 
 _DATA_DIR      = Path(os.environ.get("DATA_DIR", "/app/data"))
 _WHISPER_DIR   = _DATA_DIR / "whisper_models"
-_WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")
+_WHISPER_MODEL   = os.environ.get("WHISPER_MODEL", "base")
+_WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))  # 0 = all cores
 _ARD_GRAPHQL   = "https://api.ardaudiothek.de/graphql"
 
 _ARDSOUNDS_URL_RE = re.compile(
@@ -31,11 +32,13 @@ _transcribe_sem = asyncio.Semaphore(1)
 def _load_whisper_model():
     from faster_whisper import WhisperModel
     _WHISPER_DIR.mkdir(parents=True, exist_ok=True)
+    cpu_threads = _WHISPER_THREADS or (os.cpu_count() or 4)
     return WhisperModel(
         _WHISPER_MODEL,
         device="cpu",
         compute_type="int8",
         download_root=str(_WHISPER_DIR),
+        cpu_threads=cpu_threads,
     )
 
 
@@ -188,16 +191,20 @@ class ArdSoundsPlugin(Plugin):
         start_time = time.monotonic()
 
         async def _progress_loop():
+            first_sent = False
             while True:
-                await asyncio.sleep(300)
+                await asyncio.sleep(30 if not first_sent else 300)
                 elapsed   = time.monotonic() - start_time
                 processed = progress["processed"]
                 total     = progress["total"]
-                pct       = (processed / total * 100) if total > 0 else 0
-                eta       = _fmt_eta(elapsed, processed, total)
+                if total <= 0 or processed <= 0:
+                    continue
+                pct = processed / total * 100
+                eta = _fmt_eta(elapsed, processed, total)
                 await status.edit(
                     content=f"Transkribiere **{title}**… {pct:.0f}% fertig, noch {eta}."
                 )
+                first_sent = True
 
         progress_task = asyncio.create_task(_progress_loop())
         transcript = None
