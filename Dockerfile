@@ -18,4 +18,7 @@ COPY plugins/ ./plugins/
 # Create data directory for persistent memory
 RUN mkdir -p /app/data
 
+# hf_xet (faster-whisper dependency) writes logs here; directory must exist
+RUN mkdir -p /.cache/huggingface/xet/logs
+
 CMD ["python", "-u", "bot.py"]
