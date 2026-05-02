@@ -687,7 +687,7 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
 
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
-async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier: str = "normal") -> str:
+async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier: str = "normal") -> str:
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
     model = _model_for_tier(tier)
