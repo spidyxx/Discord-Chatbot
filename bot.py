@@ -816,6 +816,10 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
 
+def _clean_chat_reply(text: str) -> str:
+    """Collapse multiple blank lines that Claude adds to conversational replies."""
+    return re.sub(r'\n{2,}', '\n', text).strip()
+
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
 _PRIVATE_HOST_RE = re.compile(
@@ -1115,7 +1119,7 @@ async def _try_proactive(channel_id: int):
 
     log.info(f"Proactive #{channel_id}: sending '{reply[:80]}'")
     _proactive_last_sent[channel_id] = now.timestamp()
-    await channel.send(reply)
+    await channel.send(_clean_chat_reply(reply))
 
 
 @tasks.loop(minutes=PROACTIVE_CHECK_MINUTES)
@@ -1284,7 +1288,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 _bot_asked_question[channel_id] = reply.rstrip().endswith("?")
                 async with channel.typing():
                     await asyncio.sleep(0.3)
-                await channel.send(reply)
+                await channel.send(_clean_chat_reply(reply))
             else:
                 log.info(f"Channel #{channel_id}: SKIP")
                 emoji = await get_emoji_reaction(last_msg.content)
@@ -1414,7 +1418,7 @@ async def on_message(message: discord.Message):
                 memory_context=memory_ctx,
             )
         if reply:
-            await message.reply(reply)
+            await message.reply(_clean_chat_reply(reply))
         return
 
     # No @mention — only main channels get passive responses
