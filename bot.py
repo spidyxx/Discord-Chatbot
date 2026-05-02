@@ -545,6 +545,10 @@ async def _local_call(system: str, messages: list, max_tokens: int) -> str:
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
+    _now = datetime.now(TZ)
+    _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
+    now_str = f"{_weekday}, {_now.strftime('%d.%m.%Y, %H:%M Uhr')}"
+    base = base + f"\n\nAktuelles Datum und Uhrzeit: {now_str}."
     if memory_block:
         return memory_block + "\n\n" + base
     if _is_main(channel_id):
@@ -738,12 +742,21 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     messages = []
     for msg in reversed(raw):
         ts = _msg_ts(msg.created_at)
+        def _rxn_str(reactions):
+            parts = [
+                f"{str(r.emoji) if isinstance(r.emoji, str) else f':{r.emoji.name}:'}×{r.count}"
+                for r in reactions
+            ]
+            return f" [{' '.join(parts)}]" if parts else ""
+
         if msg.author == bot.user:
-            messages.append({"role": "assistant", "content": msg.content or ""})
+            assistant_content = (msg.content or "") + _rxn_str(msg.reactions)
+            messages.append({"role": "assistant", "content": assistant_content.strip()})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
+            content += _rxn_str(msg.reactions)
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
     # Truncate older *user* messages to reduce their influence on the response.
     # Assistant messages are never truncated — the bot must always see what it previously said.
@@ -802,6 +815,10 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
         tier=_tier(channel_id))
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
+
+def _clean_chat_reply(text: str) -> str:
+    """Collapse multiple blank lines that Claude adds to conversational replies."""
+    return re.sub(r'\n{2,}', '\n', text).strip()
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -1102,7 +1119,7 @@ async def _try_proactive(channel_id: int):
 
     log.info(f"Proactive #{channel_id}: sending '{reply[:80]}'")
     _proactive_last_sent[channel_id] = now.timestamp()
-    await channel.send(reply)
+    await channel.send(_clean_chat_reply(reply))
 
 
 @tasks.loop(minutes=PROACTIVE_CHECK_MINUTES)
@@ -1271,7 +1288,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 _bot_asked_question[channel_id] = reply.rstrip().endswith("?")
                 async with channel.typing():
                     await asyncio.sleep(0.3)
-                await channel.send(reply)
+                await channel.send(_clean_chat_reply(reply))
             else:
                 log.info(f"Channel #{channel_id}: SKIP")
                 emoji = await get_emoji_reaction(last_msg.content)
@@ -1328,6 +1345,11 @@ async def on_message(message: discord.Message):
                 pass
 
         image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
+        if message.reference and message.reference.resolved:
+            ref = message.reference.resolved
+            ref_images = await fetch_images(ref.attachments, ref.embeds, ref.content or "")
+            if ref_images:
+                image_blocks = ref_images + image_blocks
         has_images   = bool(image_blocks)
         privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
 
@@ -1396,7 +1418,7 @@ async def on_message(message: discord.Message):
                 memory_context=memory_ctx,
             )
         if reply:
-            await message.reply(reply)
+            await message.reply(_clean_chat_reply(reply))
         return
 
     # No @mention — only main channels get passive responses

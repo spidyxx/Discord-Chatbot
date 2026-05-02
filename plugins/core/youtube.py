@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, split_message
 
 _log = logging.getLogger(__name__)
 
@@ -80,7 +80,7 @@ class YoutubePlugin(Plugin):
                 [{"role": "user", "content": f"Transkript:\n{transcript}"}],
                 max_tokens=1500, tier=ctx.model_tier,
             )
-        chunks = [summary[i:i+2000] for i in range(0, len(summary), 2000)]
+        chunks = split_message(summary)
         await ctx.message.reply(chunks[0])
         for chunk in chunks[1:]:
             await ctx.message.channel.send(chunk)

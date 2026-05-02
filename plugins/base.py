@@ -33,6 +33,24 @@ def _write(path: Path, data: list):
     except Exception as e:
         _log.warning(f"Write failed ({path.name}): {e}")
 
+def split_message(text: str, limit: int = 2000) -> list[str]:
+    """Split text into chunks <= limit, breaking at sentence boundaries where possible."""
+    if len(text) <= limit:
+        return [text]
+    chunks = []
+    while len(text) > limit:
+        cut = max(
+            (text.rfind(m, 0, limit) + len(m)
+             for m in ('. ', '! ', '? ', '\n')
+             if text.rfind(m, 0, limit) >= 0),
+            default=limit,
+        )
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
 # ── MessageContext ────────────────────────────────────────────────────────────
 
 @dataclass
