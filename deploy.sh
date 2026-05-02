@@ -2,7 +2,7 @@
 set -e
 
 UNRAID="root@192.168.178.70"
-REMOTE_DIR="/mnt/user/appdata/Discord Chatbot"
+REMOTE_DIR="/mnt/user/appdata/Discord_Chatbot"
 
 echo "Syncing files..."
 rsync -av --delete --exclude='.git' --exclude='*.pyc' --exclude='data/' --exclude='logs/' --exclude='.env' \
