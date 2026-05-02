@@ -738,12 +738,21 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     messages = []
     for msg in reversed(raw):
         ts = _msg_ts(msg.created_at)
+        def _rxn_str(reactions):
+            parts = [
+                f"{str(r.emoji) if isinstance(r.emoji, str) else f':{r.emoji.name}:'}×{r.count}"
+                for r in reactions
+            ]
+            return f" [{' '.join(parts)}]" if parts else ""
+
         if msg.author == bot.user:
-            messages.append({"role": "assistant", "content": msg.content or ""})
+            assistant_content = (msg.content or "") + _rxn_str(msg.reactions)
+            messages.append({"role": "assistant", "content": assistant_content.strip()})
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
+            content += _rxn_str(msg.reactions)
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
     # Truncate older *user* messages to reduce their influence on the response.
     # Assistant messages are never truncated — the bot must always see what it previously said.
