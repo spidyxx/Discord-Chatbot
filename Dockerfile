@@ -18,7 +18,7 @@ COPY plugins/ ./plugins/
 # Create data directory for persistent memory
 RUN mkdir -p /app/data
 
-# hf_xet (faster-whisper dependency) writes logs here; directory must exist
-RUN mkdir -p /.cache/huggingface/xet/logs
+# hf_xet (faster-whisper dependency) writes logs here; world-writable so non-root user can write
+RUN mkdir -p /.cache/huggingface/xet/logs && chmod -R 777 /.cache
 
 CMD ["python", "-u", "bot.py"]
