@@ -26,6 +26,17 @@ Four model slots, each independently configurable:
 | `normal` | `NORMAL_MODEL` | sonnet |
 | `expensive` | `EXPENSIVE_MODEL` | sonnet |
 
+### Gemini support
+
+Set `GEMINI_API_KEY` to enable Google Gemini models. Then set any tier's model to a `gemini-*` name:
+
+```
+GEMINI_API_KEY=AIza...
+EXPENSIVE_MODEL=gemini-2.5-pro
+```
+
+The bot detects model names starting with `gemini` and routes those calls through Google's OpenAI-compatible endpoint (`generativelanguage.googleapis.com/v1beta/openai/`) via the `openai` Python package. Prompt caching and web search tools are disabled for Gemini tiers — they use plain chat completions. Image blocks and `cache_control` markers are stripped automatically (reuses the same `_to_text_messages` helper as Ollama).
+
 Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`). Defaults:
 
 | Env var | Default | Feature |

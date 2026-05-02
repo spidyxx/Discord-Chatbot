@@ -63,6 +63,7 @@ LOCAL_MODEL         = os.environ.get("LOCAL_MODEL", "")
 CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
 EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 
 # ── Tier assignments ──────────────────────────────────────────────────────────
 def _tier_env(name: str, default: str) -> str:
@@ -169,6 +170,14 @@ _ollama_client = None
 if OLLAMA_BASE_URL and LOCAL_MODEL:
     from openai import AsyncOpenAI
     _ollama_client = AsyncOpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
+
+_gemini_client = None
+if GEMINI_API_KEY:
+    from openai import AsyncOpenAI as _AsyncOpenAI
+    _gemini_client = _AsyncOpenAI(
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        api_key=GEMINI_API_KEY,
+    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -542,6 +551,13 @@ async def _local_call(system: str, messages: list, max_tokens: int) -> str:
     )
     return (response.choices[0].message.content or "").strip()
 
+async def _gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    response = await _gemini_client.chat.completions.create(
+        model=model, messages=openai_messages, max_tokens=max_tokens,
+    )
+    return (response.choices[0].message.content or "").strip()
+
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
@@ -674,13 +690,16 @@ TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier: str = "normal") -> str:
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
+    model = _model_for_tier(tier)
+    if model.startswith("gemini"):
+        return await _gemini_call(system, messages, max_tokens, model)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
     while True:
         response = await asyncio.to_thread(
             anthropic.messages.create,
-            model=_model_for_tier(tier), max_tokens=max_tokens,
+            model=model, max_tokens=max_tokens,
             system=cached_system, tools=TOOLS, messages=messages,
         )
         u = response.usage
@@ -703,9 +722,12 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
     messages = [{"role": "user", "content": user_content}]
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
+    model = _model_for_tier(tier)
+    if model.startswith("gemini"):
+        return await _gemini_call(system, messages, max_tokens, model)
     response = await asyncio.to_thread(
         anthropic.messages.create,
-        model=_model_for_tier(tier), max_tokens=max_tokens,
+        model=model, max_tokens=max_tokens,
         system=system, messages=messages,
     )
     return response.content[0].text.strip()
@@ -1161,7 +1183,7 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else ""))
+    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
 
