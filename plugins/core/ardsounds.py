@@ -114,10 +114,18 @@ def _transcribe_sync(model, path: str, progress: dict) -> str:
     )
     progress["total"] = info.duration  # available before first segment is yielded
     texts = []
+    t0 = time.monotonic()
     for seg in segments_gen:
         if seg.text.strip():
             texts.append(seg.text.strip())
-        progress["processed"] = seg.end  # audio-seconds processed so far
+        progress["processed"] = seg.end
+    elapsed = time.monotonic() - t0
+    if elapsed > 0:
+        _log.info(
+            f"Transcription done: {info.duration:.0f}s audio in {elapsed:.1f}s "
+            f"({info.duration / elapsed:.1f}x real-time, {os.cpu_count()} logical CPUs, "
+            f"threads={_WHISPER_THREADS or os.cpu_count()})"
+        )
     return " ".join(texts)
 
 
