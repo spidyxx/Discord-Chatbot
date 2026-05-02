@@ -1,6 +1,7 @@
 """ARD Sounds summary plugin — ARDSOUNDS_SUMMARY intent."""
 
 import asyncio
+import configparser
 import logging
 import os
 import re
@@ -14,11 +15,19 @@ from plugins.base import Plugin, MessageContext, split_message
 
 _log = logging.getLogger(__name__)
 
-_DATA_DIR      = Path(os.environ.get("DATA_DIR", "/app/data"))
-_WHISPER_DIR   = _DATA_DIR / "whisper_models"
+_DATA_DIR        = Path(os.environ.get("DATA_DIR", "/app/data"))
+_WHISPER_DIR     = _DATA_DIR / "whisper_models"
 _WHISPER_MODEL   = os.environ.get("WHISPER_MODEL", "base")
 _WHISPER_THREADS = int(os.environ.get("WHISPER_THREADS", "0"))  # 0 = all cores
-_ARD_GRAPHQL   = "https://api.ardaudiothek.de/graphql"
+_ARD_GRAPHQL     = "https://api.ardaudiothek.de/graphql"
+
+def _read_cfg() -> configparser.ConfigParser:
+    cfg = configparser.ConfigParser()
+    cfg.read(Path(__file__).with_suffix(".cfg"))
+    return cfg
+
+_cfg = _read_cfg()
+_UPDATE_INTERVAL = int(_cfg.get("plugin", "update_interval", fallback="60"))
 
 _ARDSOUNDS_URL_RE = re.compile(
     r'https?://(?:www\.)?ardsounds\.de/episode/(urn:ard:episode:[A-Za-z0-9]+)/?'
@@ -201,7 +210,7 @@ class ArdSoundsPlugin(Plugin):
         async def _progress_loop():
             first_sent = False
             while True:
-                await asyncio.sleep(30 if not first_sent else 60)
+                await asyncio.sleep(30 if not first_sent else _UPDATE_INTERVAL)
                 elapsed   = time.monotonic() - start_time
                 processed = progress["processed"]
                 total     = progress["total"]
