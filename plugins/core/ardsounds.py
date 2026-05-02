@@ -193,7 +193,7 @@ class ArdSoundsPlugin(Plugin):
         async def _progress_loop():
             first_sent = False
             while True:
-                await asyncio.sleep(30 if not first_sent else 300)
+                await asyncio.sleep(30 if not first_sent else 60)
                 elapsed   = time.monotonic() - start_time
                 processed = progress["processed"]
                 total     = progress["total"]
