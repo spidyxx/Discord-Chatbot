@@ -83,9 +83,16 @@ plugins/
 ├── registry.py      ← Registry singleton, discover()
 └── core/
     ├── __init__.py
-    ├── quotes.py    ← example: QUOTE_SAVE and QUOTE_GET
-    ├── youtube.py   ← YOUTUBE_SUMMARY — fetches transcript, summarises with Claude
-    └── ardsounds.py ← ARDSOUNDS_SUMMARY — downloads MP3, transcribes with Whisper, summarises
+    ├── cdu.py          ← CDU — pure-Python counter, pre_classify only
+    ├── help.py         ← HELP — static help text
+    ├── memory_admin.py ← MEMORY_LIST / MEMORY_DELETE (admin only)
+    ├── mute.py         ← MUTE — silences the bot
+    ├── reminders.py    ← REMINDER / REMINDER_LIST / REMINDER_DELETE
+    ├── respond.py      ← RESPOND — default @mention reply (web fetch)
+    ├── snapshot.py     ← SNAPSHOT — saves session as structured memory
+    ├── summary.py      ← SUMMARY — recap recent channel activity
+    ├── youtube.py      ← YOUTUBE_SUMMARY — transcript + Claude summary
+    └── ardsounds.py    ← ARDSOUNDS_SUMMARY — MP3 + Whisper + summary
 ```
 
 Community plugins (not bundled) live in `plugins/community/` and are auto-discovered on startup.

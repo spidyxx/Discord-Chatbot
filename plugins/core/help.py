@@ -11,7 +11,7 @@ _log = logging.getLogger(__name__)
 _BOT_NAME        = os.environ.get("BOT_NAME",        "Marvin")
 _COOLDOWN        = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 
-def _model(tier_var: str, tier_default: str, model_var: str, model_default: str) -> str:
+def _model(tier_var: str, tier_default: str) -> str:
     tier = os.environ.get(tier_var, tier_default)
     models = {
         "local":     os.environ.get("LOCAL_MODEL",     ""),
@@ -40,6 +40,7 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 📋 **Zusammenfassung** *(alle Kanäle)*
 `@{n} fass zusammen` – fasst die letzten Nachrichten zusammen
 `@{n} fass dieses Video zusammen <youtube-url>` – fasst ein YouTube-Video zusammen
+`@{n} fass diese Episode zusammen <ardsounds.de-url>` – transkribiert + fasst eine Podcast-Episode zusammen
 
 🔇 **Stummschalten** *(alle Kanäle)*
 `@{n} shut up` *(oder ähnliches)* – ich schweige
@@ -57,13 +58,13 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 
 ⚙️ **Bot-Konfiguration**
 Cooldown: `{_COOLDOWN}s`
-Hauptkanal: `{_model('MAIN_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}`
-Mention-Kanal: `{_model('MENTION_TIER', 'normal', 'NORMAL_MODEL', 'claude-sonnet-4-6')}`
-Klassifizierung: `{_model('CLASSIFY_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
-Emoji: `{_model('EMOJI_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
-Memory-Filter: `{_model('MEMORY_FILTER_TIER', 'cheap', 'CHEAP_MODEL', 'claude-haiku-4-5-20251001')}`
-Proaktiv: `{_model('PROACTIVE_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}`
-Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive', 'EXPENSIVE_MODEL', 'claude-sonnet-4-6')}` / `{_model('DIGEST_FACTS_TIER', 'normal', 'NORMAL_MODEL', 'claude-sonnet-4-6')}`
+Hauptkanal: `{_model('MAIN_TIER', 'expensive')}`
+Mention-Kanal: `{_model('MENTION_TIER', 'normal')}`
+Klassifizierung: `{_model('CLASSIFY_TIER', 'cheap')}`
+Emoji: `{_model('EMOJI_TIER', 'cheap')}`
+Memory-Filter: `{_model('MEMORY_FILTER_TIER', 'cheap')}`
+Proaktiv: `{_model('PROACTIVE_TIER', 'expensive')}`
+Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}` / `{_model('DIGEST_FACTS_TIER', 'normal')}`
 
 `v{BOT_VERSION}`"""
 

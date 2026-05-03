@@ -12,5 +12,5 @@ anthropic_client: object = None  # anthropic.Anthropic instance
 claude_loop:      object = None  # _claude_loop(system, messages, max_tokens, tier) -> str
 build_system_prompt: object = None  # build_system_prompt(channel_id) -> str
 get_tier:         object = None  # _tier(channel_id) -> str
-reminder_tier:    str    = "normal"
+reminder_tier:    str    = ""    # populated from REMINDER_TIER on startup
 main_channel_ids: set    = set()  # populated from MAIN_CHANNEL_IDS on startup

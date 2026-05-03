@@ -265,20 +265,10 @@ def cleanup_expired_memories() -> int:
         log.info(f"Memory cleanup: {removed} expired entries removed")
     return removed
 
+from plugins.base import known_identities_block as _known_identities_block_raw  # noqa: E402
+
 def _known_identities_block() -> str:
-    """Build a compact known-users block to pass to extraction prompts."""
-    seen: dict[str, set] = {}
-    for m in load_memories():
-        if m.get("type") == "user" and m.get("subject"):
-            subj = m["subject"]
-            seen.setdefault(subj, set()).update(m.get("aliases") or [])
-    if not seen:
-        return ""
-    lines = []
-    for subj, aliases in sorted(seen.items()):
-        alias_str = f" ({', '.join(sorted(aliases))})" if aliases else ""
-        lines.append(f"- {subj}{alias_str}")
-    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
+    return _known_identities_block_raw(load_memories())
 
 # German + English stopwords — too common to be useful for usage detection
 _STOPWORDS = {
@@ -404,7 +394,11 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
         + "\n\nAntworte nur mit kommaseparierten IDs der relevanten Einträge, oder NONE."
     )
     try:
-        text = await _simple_call(MEMORY_FILTER_TIER, "", prompt, 100)
+        text = await _simple_call(
+            MEMORY_FILTER_TIER,
+            "Du filterst Gedächtniseinträge auf Relevanz. Antworte exakt im geforderten Format.",
+            prompt, 100,
+        )
         if text.upper() == "NONE":
             return set()
         return {p.strip() for p in text.split(",") if p.strip()}
@@ -695,26 +689,20 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
         return await _gemini_call(system, messages, max_tokens, model)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
+    # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
+    # a final response, so no client-side tool_result loop is needed.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-    while True:
-        response = await asyncio.to_thread(
-            anthropic.messages.create,
-            model=model, max_tokens=max_tokens,
-            system=cached_system, tools=TOOLS, messages=messages,
-        )
-        u = response.usage
-        log.debug(
-            f"Cache: write={u.cache_creation_input_tokens} "
-            f"read={u.cache_read_input_tokens} "
-            f"uncached={u.input_tokens}"
-        )
-        if response.stop_reason != "tool_use":
-            break
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": b.id, "content": ""}
-            for b in response.content if b.type == "tool_use"
-        ]})
+    response = await asyncio.to_thread(
+        anthropic.messages.create,
+        model=model, max_tokens=max_tokens,
+        system=cached_system, tools=TOOLS, messages=messages,
+    )
+    u = response.usage
+    log.debug(
+        f"Cache: write={u.cache_creation_input_tokens} "
+        f"read={u.cache_read_input_tokens} "
+        f"uncached={u.input_tokens}"
+    )
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
 async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
@@ -838,9 +826,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
 
-def _clean_chat_reply(text: str) -> str:
-    """Collapse multiple blank lines that Claude adds to conversational replies."""
-    return re.sub(r'\n{2,}', '\n', text).strip()
+from plugins.base import clean_chat_reply as _clean_chat_reply  # noqa: E402
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -1017,7 +1003,7 @@ async def daily_digest():
             log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
             continue
 
-        await channel.send(f"**Tagesrückblick** 🌙\n{summary}")
+        await channel.send(f"**Tagesrückblick** 🌙\n{_clean_chat_reply(summary)}")
         log.info(f"Digest #{channel_id}: posted")
 
         # Extract structured atomic facts from the same chat log and store them
@@ -1420,27 +1406,7 @@ async def on_message(message: discord.Message):
             ))
             return
 
-        # Fallback: no plugin handled the intent — respond directly.
-        # This covers RESPOND intent in both main and non-main channels.
-        # Include the referenced message text so Claude has the full context
-        # even in channels where history isn't pre-loaded.
-        memory_ctx = clean
-        if message.reference and message.reference.resolved:
-            ref = message.reference.resolved
-            ref_text = (ref.content or "").strip()
-            if ref_text:
-                ref_author = ref.author.display_name if ref.author else "?"
-                memory_ctx = f"[antwortet auf {ref_author}: {ref_text[:300]}] {clean}"
-        async with message.channel.typing():
-            reply = await ask_claude(
-                clean, message.author.display_name,
-                image_blocks=image_blocks or None,
-                channel_id=message.channel.id,
-                before_id=message.id,
-                memory_context=memory_ctx,
-            )
-        if reply:
-            await message.reply(_clean_chat_reply(reply))
+        log.warning(f"No plugin handles intent {intent!r} — RespondPlugin should always claim RESPOND fallback")
         return
 
     # No @mention — only main channels get passive responses

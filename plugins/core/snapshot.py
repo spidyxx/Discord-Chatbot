@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from plugins.base import Plugin, MessageContext, _read
+from plugins.base import Plugin, MessageContext, _read, known_identities_block
 from plugins import state as bot_state
 
 _log = logging.getLogger(__name__)
@@ -17,18 +17,7 @@ _MEMORY_FILE = Path(os.environ.get("DATA_DIR", "/app/data")) / "memory.json"
 
 
 def _known_identities_block() -> str:
-    seen: dict[str, set] = {}
-    for m in _read(_MEMORY_FILE):
-        if m.get("type") == "user" and m.get("subject"):
-            subj = m["subject"]
-            seen.setdefault(subj, set()).update(m.get("aliases") or [])
-    if not seen:
-        return ""
-    lines = [
-        f"- {s}" + (f" ({', '.join(sorted(a))})" if a else "")
-        for s, a in sorted(seen.items())
-    ]
-    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
+    return known_identities_block(_read(_MEMORY_FILE))
 
 
 def _parse_snapshot_facts(text: str) -> list[dict]:
