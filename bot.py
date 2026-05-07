@@ -1250,7 +1250,29 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
 
             log.info(f"Channel #{channel_id}: evaluating response to '{last_msg.content[:60]}' from {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
-            image_blocks = await fetch_images(last_msg.attachments, list(last_msg.embeds), last_msg.content or "")
+
+            # If the prompting message has no image but the same user posted one
+            # moments earlier (split image + follow-up text, or a retry pass after
+            # the follow-up arrived during generation), pull the image from that
+            # prior message.
+            img_source = last_msg
+            if not (last_msg.attachments or last_msg.embeds):
+                for prev in reversed(all_msgs[:-1]):
+                    if prev.author.id != last_msg.author.id:
+                        continue
+                    age = (last_msg.created_at - prev.created_at).total_seconds()
+                    if age > 300:
+                        break
+                    if prev.attachments or prev.embeds:
+                        img_source = prev
+                        log.info(
+                            f"Channel #{channel_id}: carrying over image from prior "
+                            f"msg {prev.id} ({age:.0f}s earlier) by "
+                            f"{prev.author.display_name}"
+                        )
+                        break
+
+            image_blocks = await fetch_images(img_source.attachments, list(img_source.embeds), img_source.content or "")
             if question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
