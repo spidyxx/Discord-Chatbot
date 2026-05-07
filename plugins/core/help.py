@@ -3,7 +3,7 @@
 import logging
 import os
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, split_message
 from version import BOT_VERSION
 
 _log = logging.getLogger(__name__)
@@ -83,7 +83,10 @@ class HelpPlugin(Plugin):
     intent_order = 90  # just before RESPOND (which is always last in the footer)
 
     async def handle(self, ctx: MessageContext) -> None:
-        await ctx.message.reply(build_help_text())
+        chunks = split_message(build_help_text())
+        await ctx.message.reply(chunks[0])
+        for chunk in chunks[1:]:
+            await ctx.message.channel.send(chunk)
 
 
 def setup(registry) -> None:
