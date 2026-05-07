@@ -1158,6 +1158,9 @@ async def slash_help(interaction: discord.Interaction):
     for chunk in chunks[1:]:
         await interaction.followup.send(chunk, ephemeral=True)
 
+_LAST_VERSION_FILE = DATA_DIR / "last_announced_version.txt"
+_announced_startup = False
+
 @bot.event
 async def on_ready():
     cleanup_expired_memories()
@@ -1176,6 +1179,35 @@ async def on_ready():
     log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
+
+    global _announced_startup
+    if not _announced_startup and MAIN_CHANNEL_IDS:
+        _announced_startup = True
+        prev_version = None
+        try:
+            if _LAST_VERSION_FILE.exists():
+                prev_version = _LAST_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+        except Exception as e:
+            log.warning(f"Could not read last_announced_version: {e}")
+
+        if prev_version != BOT_VERSION:
+            msg = f"Ich bin zurück, gab ein Update und bin jetzt auf Version {BOT_VERSION}."
+        else:
+            msg = f"Ich bin zurück (Version {BOT_VERSION})."
+
+        try:
+            _LAST_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _LAST_VERSION_FILE.write_text(BOT_VERSION, encoding="utf-8")
+        except Exception as e:
+            log.warning(f"Could not write last_announced_version: {e}")
+
+        for cid in MAIN_CHANNEL_IDS:
+            ch = bot.get_channel(cid)
+            if ch:
+                try:
+                    await ch.send(msg)
+                except Exception as e:
+                    log.warning(f"Failed to send startup announcement to #{cid}: {e}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
     """Evaluate whether to respond in a main channel.
