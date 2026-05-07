@@ -42,6 +42,10 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 `@{n} fass dieses Video zusammen <youtube-url>` – fasst ein YouTube-Video zusammen
 `@{n} fass diese Episode zusammen <ardsounds.de-url>` – transkribiert + fasst eine Podcast-Episode zusammen
 
+🎵 **Songtexte** *(alle Kanäle)*
+`@{n} zeig mir den Songtext zu <Künstler> - <Titel>` – holt den Songtext (Format mit Bindestrich)
+`@{n} <genius.com-url>` – Songtext direkt von einer Genius-URL
+
 🔇 **Stummschalten** *(alle Kanäle)*
 `@{n} shut up` *(oder ähnliches)* – ich schweige
 `@{n}` *(irgendwas)* – reaktiviert mich wieder

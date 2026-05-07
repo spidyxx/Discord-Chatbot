@@ -1152,7 +1152,11 @@ bot_state.main_channel_ids   = MAIN_CHANNEL_IDS
 
 @bot.tree.command(name="help", description="Zeigt was Marvin alles kann")
 async def slash_help(interaction: discord.Interaction):
-    await interaction.response.send_message(_build_help_text(), ephemeral=True)
+    from plugins.base import split_message
+    chunks = split_message(_build_help_text())
+    await interaction.response.send_message(chunks[0], ephemeral=True)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk, ephemeral=True)
 
 @bot.event
 async def on_ready():
