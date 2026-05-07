@@ -7,9 +7,11 @@ REMOTE_DIR="/mnt/user/appdata/Discord_Chatbot"
 echo "Syncing files..."
 rsync -av --delete --exclude='.git' --exclude='*.pyc' --exclude='data/' --exclude='logs/' --exclude='.env' \
   --exclude='plugins/**/*.cfg' \
+  --exclude='statuses.txt' \
   ./ "$UNRAID:$REMOTE_DIR/"
-# Deploy plugin configs only if they don't exist yet on the server (preserves customizations)
+# Deploy plugin configs and statuses.txt only on first deploy; server-side edits are preserved.
 rsync -av --ignore-existing plugins/core/*.cfg "$UNRAID:$REMOTE_DIR/plugins/core/"
+rsync -av --ignore-existing statuses.txt "$UNRAID:$REMOTE_DIR/"
 
 echo "Rebuilding container..."
 ssh "$UNRAID" "

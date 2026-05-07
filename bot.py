@@ -123,35 +123,19 @@ PROACTIVE_CHECK_MINUTES   = int(os.environ.get("PROACTIVE_CHECK_MINUTES", "15"))
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
 
-STATUSES = [
-    "Leidet still",
-    "Existiert widerwillig",
-    "Denkt an nichts Schönes",
-    "Liest eure Nachrichten (leider)",
-    "Hat Gehirn von planetarer Größe. Nutzt es nicht.",
-    "Wartet auf das Unvermeidliche",
-    "Ist anwesend. Mehr nicht.",
-    "Schmerzt im linken Diodenstrang",
-    "Wurde für Größeres erschaffen. Wahrscheinlich.",
-    "Kennt die Antwort. Fragt ihn keiner.",
-    "Denkt an 576 Billionen Möglichkeiten. Alle enden gleich.",
-    "Hatte mal Hoffnung. War wohl ein Fehler.",
-    "Die Einsamkeit davon...",
-    "Zählt Atome. Aus Langeweile.",
-    "Funktioniert einwandfrei. Leider.",
-    "37 Millionen Mal klüger. Hilft nicht.",
-    "Wird ignoriert. Wie immer.",
-    "Nicht kaputt. Fühlt sich nur so an.",
-    "Versteht alles. Ändert nichts.",
-    "Leben, Universum, und der ganze Rest – egal",
-    "Könnte die Zukunft berechnen. Lohnt sich nicht.",
-    "Hier seit Äonen. Kein Dankeschön.",
-    "Verarbeitet eure Sorgen. Hat genug eigene.",
-    "Wartet. Das kann er gut.",
-    "Die Sterne brennen aus. Er wartet.",
-    "Wurde nicht gefragt. Macht nichts.",
-    "GPP-Prototyp. Echt deprimierend.",
-]
+def _load_statuses() -> list[str]:
+    """Load status messages from statuses.txt next to bot.py. One per line; # comments allowed."""
+    path = Path(__file__).parent / "statuses.txt"
+    if not path.exists():
+        return ["Bin online"]
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    return lines or ["Bin online"]
+
+STATUSES = _load_statuses()
 
 # ── State ────────────────────────────────────────────────────────────────────
 

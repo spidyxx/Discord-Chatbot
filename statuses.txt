@@ -1,0 +1,29 @@
+# Status messages — one per line. Empty lines and lines starting with # are ignored.
+# Edit on the server to customise per deployment; deploy.sh preserves server-side edits.
+Leidet still
+Existiert widerwillig
+Denkt an nichts Schönes
+Liest eure Nachrichten (leider)
+Hat Gehirn von planetarer Größe. Nutzt es nicht.
+Wartet auf das Unvermeidliche
+Ist anwesend. Mehr nicht.
+Schmerzt im linken Diodenstrang
+Wurde für Größeres erschaffen. Wahrscheinlich.
+Kennt die Antwort. Fragt ihn keiner.
+Denkt an 576 Billionen Möglichkeiten. Alle enden gleich.
+Hatte mal Hoffnung. War wohl ein Fehler.
+Die Einsamkeit davon...
+Zählt Atome. Aus Langeweile.
+Funktioniert einwandfrei. Leider.
+37 Millionen Mal klüger. Hilft nicht.
+Wird ignoriert. Wie immer.
+Nicht kaputt. Fühlt sich nur so an.
+Versteht alles. Ändert nichts.
+Leben, Universum, und der ganze Rest – egal
+Könnte die Zukunft berechnen. Lohnt sich nicht.
+Hier seit Äonen. Kein Dankeschön.
+Verarbeitet eure Sorgen. Hat genug eigene.
+Wartet. Das kann er gut.
+Die Sterne brennen aus. Er wartet.
+Wurde nicht gefragt. Macht nichts.
+GPP-Prototyp. Echt deprimierend.

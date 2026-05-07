@@ -56,6 +56,9 @@ Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`)
 - **Main channels** (`MAIN_CHANNEL_IDS`): full personality, memory injection, passive autonomous responses
 - **Other channels**: neutral prompt, mention-only
 
+### Status messages
+Discord presence/status strings rotate from `statuses.txt` at the repo root (one per line, `#` for comments). `bot.py` loads it at startup via `_load_statuses()`. `deploy.sh` first-seeds the file then preserves server-side edits via `--ignore-existing`, identical to the plugin `.cfg` handling — so per-deployment customisation (e.g. a Snoop bot with stoner statuses) survives subsequent deploys.
+
 ### System prompt
 `build_system_prompt()` assembles: memory block + base prompt + current date (German weekday, `DD.MM.YYYY`, injected fresh on every call using `TIMEZONE`). Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. This keeps the cached system prompt stable across the day so prompt-cache hits aren't invalidated every minute.
 
