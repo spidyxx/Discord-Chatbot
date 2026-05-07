@@ -1,1 +1,1 @@
-BOT_VERSION = "1.0.52"
+BOT_VERSION = "1.0.53"

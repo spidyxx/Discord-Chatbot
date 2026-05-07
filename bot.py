@@ -537,7 +537,11 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
     response = await _gemini_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=max_tokens * 4,
     )
-    return (response.choices[0].message.content or "").strip()
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        finish = getattr(response.choices[0], "finish_reason", "?")
+        log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
+    return text
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
