@@ -531,8 +531,11 @@ async def _local_call(system: str, messages: list, max_tokens: int) -> str:
 
 async def _gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    # Gemini 2.5 thinking models spend hidden reasoning tokens against the
+    # output budget; quadruple the caller's cap so the visible reply isn't
+    # truncated mid-sentence.
     response = await _gemini_client.chat.completions.create(
-        model=model, messages=openai_messages, max_tokens=max_tokens,
+        model=model, messages=openai_messages, max_tokens=max_tokens * 4,
     )
     return (response.choices[0].message.content or "").strip()
 
