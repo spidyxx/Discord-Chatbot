@@ -1277,7 +1277,18 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                         break
 
             image_blocks = await fetch_images(img_source.attachments, list(img_source.embeds), img_source.content or "")
-            if question_bypass:
+
+            # Hard skip: message @-mentions another user (and not the bot) and
+            # doesn't reference the bot by name — clearly addressed elsewhere.
+            addressed_others = (
+                any(u != bot.user for u in last_msg.mentions)
+                and bot.user not in last_msg.mentions
+                and BOT_NAME.lower() not in (last_msg.content or "").lower()
+            )
+            if addressed_others:
+                log.info(f"Channel #{channel_id}: message addresses other user(s) — SKIP")
+                respond = False
+            elif question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
                 reply = await ask_claude(
