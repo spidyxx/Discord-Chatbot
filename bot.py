@@ -63,6 +63,7 @@ LOCAL_MODEL         = os.environ.get("LOCAL_MODEL", "")
 CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
 EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
+GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
 
 # ── Tier assignments ──────────────────────────────────────────────────────────
 def _tier_env(name: str, default: str) -> str:
@@ -122,35 +123,19 @@ PROACTIVE_CHECK_MINUTES   = int(os.environ.get("PROACTIVE_CHECK_MINUTES", "15"))
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
 
-STATUSES = [
-    "Leidet still",
-    "Existiert widerwillig",
-    "Denkt an nichts Schönes",
-    "Liest eure Nachrichten (leider)",
-    "Hat Gehirn von planetarer Größe. Nutzt es nicht.",
-    "Wartet auf das Unvermeidliche",
-    "Ist anwesend. Mehr nicht.",
-    "Schmerzt im linken Diodenstrang",
-    "Wurde für Größeres erschaffen. Wahrscheinlich.",
-    "Kennt die Antwort. Fragt ihn keiner.",
-    "Denkt an 576 Billionen Möglichkeiten. Alle enden gleich.",
-    "Hatte mal Hoffnung. War wohl ein Fehler.",
-    "Die Einsamkeit davon...",
-    "Zählt Atome. Aus Langeweile.",
-    "Funktioniert einwandfrei. Leider.",
-    "37 Millionen Mal klüger. Hilft nicht.",
-    "Wird ignoriert. Wie immer.",
-    "Nicht kaputt. Fühlt sich nur so an.",
-    "Versteht alles. Ändert nichts.",
-    "Leben, Universum, und der ganze Rest – egal",
-    "Könnte die Zukunft berechnen. Lohnt sich nicht.",
-    "Hier seit Äonen. Kein Dankeschön.",
-    "Verarbeitet eure Sorgen. Hat genug eigene.",
-    "Wartet. Das kann er gut.",
-    "Die Sterne brennen aus. Er wartet.",
-    "Wurde nicht gefragt. Macht nichts.",
-    "GPP-Prototyp. Echt deprimierend.",
-]
+def _load_statuses() -> list[str]:
+    """Load status messages from statuses.txt next to bot.py. One per line; # comments allowed."""
+    path = Path(__file__).parent / "statuses.txt"
+    if not path.exists():
+        return ["Bin online"]
+    lines = [
+        line.strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    return lines or ["Bin online"]
+
+STATUSES = _load_statuses()
 
 # ── State ────────────────────────────────────────────────────────────────────
 
@@ -169,6 +154,14 @@ _ollama_client = None
 if OLLAMA_BASE_URL and LOCAL_MODEL:
     from openai import AsyncOpenAI
     _ollama_client = AsyncOpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
+
+_gemini_client = None
+if GEMINI_API_KEY:
+    from openai import AsyncOpenAI as _AsyncOpenAI
+    _gemini_client = _AsyncOpenAI(
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        api_key=GEMINI_API_KEY,
+    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -256,20 +249,10 @@ def cleanup_expired_memories() -> int:
         log.info(f"Memory cleanup: {removed} expired entries removed")
     return removed
 
+from plugins.base import known_identities_block as _known_identities_block_raw  # noqa: E402
+
 def _known_identities_block() -> str:
-    """Build a compact known-users block to pass to extraction prompts."""
-    seen: dict[str, set] = {}
-    for m in load_memories():
-        if m.get("type") == "user" and m.get("subject"):
-            subj = m["subject"]
-            seen.setdefault(subj, set()).update(m.get("aliases") or [])
-    if not seen:
-        return ""
-    lines = []
-    for subj, aliases in sorted(seen.items()):
-        alias_str = f" ({', '.join(sorted(aliases))})" if aliases else ""
-        lines.append(f"- {subj}{alias_str}")
-    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
+    return _known_identities_block_raw(load_memories())
 
 # German + English stopwords — too common to be useful for usage detection
 _STOPWORDS = {
@@ -395,7 +378,11 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
         + "\n\nAntworte nur mit kommaseparierten IDs der relevanten Einträge, oder NONE."
     )
     try:
-        text = await _simple_call(MEMORY_FILTER_TIER, "", prompt, 100)
+        text = await _simple_call(
+            MEMORY_FILTER_TIER,
+            "Du filterst Gedächtniseinträge auf Relevanz. Antworte exakt im geforderten Format.",
+            prompt, 100,
+        )
         if text.upper() == "NONE":
             return set()
         return {p.strip() for p in text.split(",") if p.strip()}
@@ -542,13 +529,30 @@ async def _local_call(system: str, messages: list, max_tokens: int) -> str:
     )
     return (response.choices[0].message.content or "").strip()
 
+async def _gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    # Gemini 2.5 thinking models spend hidden reasoning tokens against the
+    # output budget; multiply the caller's cap generously so deep reasoning
+    # leaves enough headroom for a complete visible reply. Pro's hard ceiling
+    # is 65536; ×16 of typical callers (≤2048) stays well under it.
+    response = await _gemini_client.chat.completions.create(
+        model=model, messages=openai_messages, max_tokens=min(max_tokens * 16, 65536),
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        finish = getattr(response.choices[0], "finish_reason", "?")
+        log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
+    return text
+
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
     _now = datetime.now(TZ)
     _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
-    now_str = f"{_weekday}, {_now.strftime('%d.%m.%Y, %H:%M Uhr')}"
-    base = base + f"\n\nAktuelles Datum und Uhrzeit: {now_str}."
+    # Date only (no HH:MM): keeps the cached system prompt stable across the day.
+    # Current time is still visible to the model via [HH:MM] prefixes on user
+    # messages built in fetch_context() and ask_claude().
+    base = base + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}."
     if memory_block:
         return memory_block + "\n\n" + base
     if _is_main(channel_id):
@@ -671,31 +675,28 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
 
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
-async def _claude_loop(system: str, messages: list, max_tokens: int = 1024, tier: str = "normal") -> str:
+async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier: str = "normal") -> str:
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
+    model = _model_for_tier(tier)
+    if model.startswith("gemini"):
+        return await _gemini_call(system, messages, max_tokens, model)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
+    # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
+    # a final response, so no client-side tool_result loop is needed.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-    while True:
-        response = await asyncio.to_thread(
-            anthropic.messages.create,
-            model=_model_for_tier(tier), max_tokens=max_tokens,
-            system=cached_system, tools=TOOLS, messages=messages,
-        )
-        u = response.usage
-        log.debug(
-            f"Cache: write={u.cache_creation_input_tokens} "
-            f"read={u.cache_read_input_tokens} "
-            f"uncached={u.input_tokens}"
-        )
-        if response.stop_reason != "tool_use":
-            break
-        messages.append({"role": "assistant", "content": response.content})
-        messages.append({"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": b.id, "content": ""}
-            for b in response.content if b.type == "tool_use"
-        ]})
+    response = await asyncio.to_thread(
+        anthropic.messages.create,
+        model=model, max_tokens=max_tokens,
+        system=cached_system, tools=TOOLS, messages=messages,
+    )
+    u = response.usage
+    log.debug(
+        f"Cache: write={u.cache_creation_input_tokens} "
+        f"read={u.cache_read_input_tokens} "
+        f"uncached={u.input_tokens}"
+    )
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
 async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
@@ -703,9 +704,12 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
     messages = [{"role": "user", "content": user_content}]
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
+    model = _model_for_tier(tier)
+    if model.startswith("gemini"):
+        return await _gemini_call(system, messages, max_tokens, model)
     response = await asyncio.to_thread(
         anthropic.messages.create,
-        model=_model_for_tier(tier), max_tokens=max_tokens,
+        model=model, max_tokens=max_tokens,
         system=system, messages=messages,
     )
     return response.content[0].text.strip()
@@ -816,9 +820,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
 
-def _clean_chat_reply(text: str) -> str:
-    """Collapse multiple blank lines that Claude adds to conversational replies."""
-    return re.sub(r'\n{2,}', '\n', text).strip()
+from plugins.base import clean_chat_reply as _clean_chat_reply  # noqa: E402
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -995,7 +997,7 @@ async def daily_digest():
             log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
             continue
 
-        await channel.send(f"**Tagesrückblick** 🌙\n{summary}")
+        await channel.send(f"**Tagesrückblick** 🌙\n{_clean_chat_reply(summary)}")
         log.info(f"Digest #{channel_id}: posted")
 
         # Extract structured atomic facts from the same chat log and store them
@@ -1144,7 +1146,14 @@ bot_state.main_channel_ids   = MAIN_CHANNEL_IDS
 
 @bot.tree.command(name="help", description="Zeigt was Marvin alles kann")
 async def slash_help(interaction: discord.Interaction):
-    await interaction.response.send_message(_build_help_text(), ephemeral=True)
+    from plugins.base import split_message
+    chunks = split_message(_build_help_text())
+    await interaction.response.send_message(chunks[0], ephemeral=True)
+    for chunk in chunks[1:]:
+        await interaction.followup.send(chunk, ephemeral=True)
+
+_LAST_VERSION_FILE = DATA_DIR / "last_announced_version.txt"
+_announced_startup = False
 
 @bot.event
 async def on_ready():
@@ -1161,9 +1170,38 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else ""))
+    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
+
+    global _announced_startup
+    if not _announced_startup and MAIN_CHANNEL_IDS:
+        _announced_startup = True
+        prev_version = None
+        try:
+            if _LAST_VERSION_FILE.exists():
+                prev_version = _LAST_VERSION_FILE.read_text(encoding="utf-8").strip() or None
+        except Exception as e:
+            log.warning(f"Could not read last_announced_version: {e}")
+
+        if prev_version != BOT_VERSION:
+            msg = f"Ich bin zurück, gab ein Update und bin jetzt auf Version {BOT_VERSION}."
+        else:
+            msg = f"Ich bin zurück (Version {BOT_VERSION})."
+
+        try:
+            _LAST_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            _LAST_VERSION_FILE.write_text(BOT_VERSION, encoding="utf-8")
+        except Exception as e:
+            log.warning(f"Could not write last_announced_version: {e}")
+
+        for cid in MAIN_CHANNEL_IDS:
+            ch = bot.get_channel(cid)
+            if ch:
+                try:
+                    await ch.send(msg)
+                except Exception as e:
+                    log.warning(f"Failed to send startup announcement to #{cid}: {e}")
 
 async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
     """Evaluate whether to respond in a main channel.
@@ -1242,8 +1280,41 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
 
             log.info(f"Channel #{channel_id}: evaluating response to '{last_msg.content[:60]}' from {last_msg.author.display_name}")
             recent_context = "\n".join(recent_lines)
-            image_blocks = await fetch_images(last_msg.attachments, list(last_msg.embeds), last_msg.content or "")
-            if question_bypass:
+
+            # If the prompting message has no image but the same user posted one
+            # moments earlier (split image + follow-up text, or a retry pass after
+            # the follow-up arrived during generation), pull the image from that
+            # prior message.
+            img_source = last_msg
+            if not (last_msg.attachments or last_msg.embeds):
+                for prev in reversed(all_msgs[:-1]):
+                    if prev.author.id != last_msg.author.id:
+                        continue
+                    age = (last_msg.created_at - prev.created_at).total_seconds()
+                    if age > 300:
+                        break
+                    if prev.attachments or prev.embeds:
+                        img_source = prev
+                        log.info(
+                            f"Channel #{channel_id}: carrying over image from prior "
+                            f"msg {prev.id} ({age:.0f}s earlier) by "
+                            f"{prev.author.display_name}"
+                        )
+                        break
+
+            image_blocks = await fetch_images(img_source.attachments, list(img_source.embeds), img_source.content or "")
+
+            # Hard skip: message @-mentions another user (and not the bot) and
+            # doesn't reference the bot by name — clearly addressed elsewhere.
+            addressed_others = (
+                any(u != bot.user for u in last_msg.mentions)
+                and bot.user not in last_msg.mentions
+                and BOT_NAME.lower() not in (last_msg.content or "").lower()
+            )
+            if addressed_others:
+                log.info(f"Channel #{channel_id}: message addresses other user(s) — SKIP")
+                respond = False
+            elif question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
                 reply = await ask_claude(
@@ -1398,27 +1469,7 @@ async def on_message(message: discord.Message):
             ))
             return
 
-        # Fallback: no plugin handled the intent — respond directly.
-        # This covers RESPOND intent in both main and non-main channels.
-        # Include the referenced message text so Claude has the full context
-        # even in channels where history isn't pre-loaded.
-        memory_ctx = clean
-        if message.reference and message.reference.resolved:
-            ref = message.reference.resolved
-            ref_text = (ref.content or "").strip()
-            if ref_text:
-                ref_author = ref.author.display_name if ref.author else "?"
-                memory_ctx = f"[antwortet auf {ref_author}: {ref_text[:300]}] {clean}"
-        async with message.channel.typing():
-            reply = await ask_claude(
-                clean, message.author.display_name,
-                image_blocks=image_blocks or None,
-                channel_id=message.channel.id,
-                before_id=message.id,
-                memory_context=memory_ctx,
-            )
-        if reply:
-            await message.reply(_clean_chat_reply(reply))
+        log.warning(f"No plugin handles intent {intent!r} — RespondPlugin should always claim RESPOND fallback")
         return
 
     # No @mention — only main channels get passive responses

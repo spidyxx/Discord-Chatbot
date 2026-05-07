@@ -4,7 +4,7 @@ import logging
 import os
 import re
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, clean_chat_reply, split_message
 
 _log = logging.getLogger(__name__)
 
@@ -67,7 +67,14 @@ class RespondPlugin(Plugin):
                 before_id=ctx.message.id,
                 memory_context=clean,
             )
-        await ctx.message.reply(reply)
+        reply = clean_chat_reply(reply or "").strip()
+        if not reply:
+            _log.warning("Empty reply from model — sending fallback")
+            reply = "Hmm, mein Kopf ist grad leer."
+        chunks = split_message(reply)
+        await ctx.message.reply(chunks[0])
+        for chunk in chunks[1:]:
+            await ctx.message.channel.send(chunk)
 
 
 def setup(registry) -> None:

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from plugins.base import Plugin, MessageContext, _read, _write
+from plugins.base import Plugin, MessageContext, _read, _write, split_message
 
 _log = logging.getLogger(__name__)
 
@@ -18,7 +18,7 @@ _TZ = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
 
 _CDU_RE         = re.compile(r'\bcdu\b', re.IGNORECASE)
 _CDU_RESET_RE   = re.compile(r'\b(reset|resettet|zurücksetzen|neustart|neu)\b', re.IGNORECASE)
-_CDU_HISTORY_RE = re.compile(r'\b(protokoll|verlauf|history|alle|liste)\b', re.IGNORECASE)
+_CDU_HISTORY_RE = re.compile(r'\b(protokoll|verlauf|history|liste)\b', re.IGNORECASE)
 
 
 def _fmt_hm(seconds: float) -> str:
@@ -96,19 +96,10 @@ class CduPlugin(Plugin):
                 return
             await ctx.message.reply(_cdu_reset(reason))
         elif _CDU_HISTORY_RE.search(clean):
-            history_text = _cdu_history()
-            if len(history_text) <= 1900:
-                await ctx.message.reply(history_text)
-            else:
-                current = ""
-                for line in history_text.splitlines():
-                    if len(current) + len(line) + 1 > 1900:
-                        await ctx.message.reply(current)
-                        current = line
-                    else:
-                        current = (current + "\n" + line).strip()
-                if current:
-                    await ctx.message.channel.send(current)
+            chunks = split_message(_cdu_history())
+            await ctx.message.reply(chunks[0])
+            for chunk in chunks[1:]:
+                await ctx.message.channel.send(chunk)
         else:
             await ctx.message.reply(_cdu_status())
 

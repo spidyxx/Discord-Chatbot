@@ -16,7 +16,6 @@ _log = logging.getLogger(__name__)
 
 _DATA_DIR      = Path(os.environ.get("DATA_DIR", "/app/data"))
 _REMINDERS_FILE = _DATA_DIR / "reminders.json"
-_CHEAP_MODEL   = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 _TZ            = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
 
 _reminder_tasks: dict[str, asyncio.Task] = {}
@@ -43,19 +42,18 @@ def _fmt_ts(ts: float) -> str:
 # ── Reminder lifecycle ────────────────────────────────────────────────────────
 
 async def _classify_mode(message: str) -> str:
-    client = bot_state.anthropic_client
-    resp = await asyncio.to_thread(
-        client.messages.create,
-        model=_CHEAP_MODEL, max_tokens=10,
-        system=(
+    text = await bot_state.claude_loop(
+        (
             "Classify this reminder as PROMPT or NOTIFY.\n"
             "PROMPT = the bot must generate a response (tell a joke, write a poem, ask a question, etc.)\n"
             "NOTIFY = just remind the user about something (meeting, medication, task name, event, etc.)\n"
             "Reply with exactly one word: PROMPT or NOTIFY"
         ),
-        messages=[{"role": "user", "content": message}],
+        [{"role": "user", "content": message}],
+        max_tokens=10,
+        tier="cheap",
     )
-    return "prompt" if resp.content[0].text.strip().upper().startswith("PROMPT") else "notify"
+    return "prompt" if text.strip().upper().startswith("PROMPT") else "notify"
 
 
 async def _fire(entry: dict):

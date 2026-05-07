@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,30 @@ def _write(path: Path, data: list):
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception as e:
         _log.warning(f"Write failed ({path.name}): {e}")
+
+def known_identities_block(memories: list) -> str:
+    """Build a compact known-users block to pass to extraction prompts.
+
+    Pass the memories list (caller reads memory.json themselves) — keeps
+    this helper free of any DATA_DIR / file-path coupling.
+    """
+    seen: dict[str, set] = {}
+    for m in memories:
+        if m.get("type") == "user" and m.get("subject"):
+            seen.setdefault(m["subject"], set()).update(m.get("aliases") or [])
+    if not seen:
+        return ""
+    lines = [
+        f"- {s}" + (f" ({', '.join(sorted(a))})" if a else "")
+        for s, a in sorted(seen.items())
+    ]
+    return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
+
+
+def clean_chat_reply(text: str) -> str:
+    """Collapse multiple blank lines that Claude adds to conversational replies."""
+    return re.sub(r'\n{2,}', '\n', text).strip()
+
 
 def split_message(text: str, limit: int = 2000) -> list[str]:
     """Split text into chunks <= limit, breaking at sentence boundaries where possible."""

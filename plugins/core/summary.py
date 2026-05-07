@@ -5,7 +5,7 @@ import os
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-from plugins.base import Plugin, MessageContext
+from plugins.base import Plugin, MessageContext, clean_chat_reply, split_message
 
 _log = logging.getLogger(__name__)
 
@@ -71,7 +71,10 @@ class SummaryPlugin(Plugin):
                 [{"role": "user", "content": "\n".join(lines)}],
                 max_tokens=600, tier=ctx.model_tier,
             )
-        await ctx.message.reply(summary)
+        chunks = split_message(clean_chat_reply(summary))
+        await ctx.message.reply(chunks[0])
+        for chunk in chunks[1:]:
+            await ctx.message.channel.send(chunk)
 
 
 def setup(registry) -> None:
