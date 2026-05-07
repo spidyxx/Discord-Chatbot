@@ -57,7 +57,7 @@ Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`)
 - **Other channels**: neutral prompt, mention-only
 
 ### System prompt
-`build_system_prompt()` assembles: memory block + base prompt + current date/time (German weekday, `DD.MM.YYYY, HH:MM Uhr`, injected fresh on every call using `TIMEZONE`).
+`build_system_prompt()` assembles: memory block + base prompt + current date (German weekday, `DD.MM.YYYY`, injected fresh on every call using `TIMEZONE`). Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. This keeps the cached system prompt stable across the day so prompt-cache hits aren't invalidated every minute.
 
 ### Chat reply post-processing
 `_clean_chat_reply()` collapses multiple blank lines (`\n\n+` → `\n`) before all conversational `channel.send` / `message.reply` calls. Plugin replies (summaries etc.) bypass this and are sent as-is.

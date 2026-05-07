@@ -557,8 +557,10 @@ def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -
     base = _base_prompt(channel_id)
     _now = datetime.now(TZ)
     _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
-    now_str = f"{_weekday}, {_now.strftime('%d.%m.%Y, %H:%M Uhr')}"
-    base = base + f"\n\nAktuelles Datum und Uhrzeit: {now_str}."
+    # Date only (no HH:MM): keeps the cached system prompt stable across the day.
+    # Current time is still visible to the model via [HH:MM] prefixes on user
+    # messages built in fetch_context() and ask_claude().
+    base = base + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}."
     if memory_block:
         return memory_block + "\n\n" + base
     if _is_main(channel_id):
