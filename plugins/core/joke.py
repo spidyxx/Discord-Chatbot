@@ -27,8 +27,9 @@ _DATA_DIR    = Path(os.environ.get("DATA_DIR", "/app/data"))
 _CONFIG_FILE = _DATA_DIR / "joke_config.json"
 _TZ          = ZoneInfo(os.environ.get("TIMEZONE", "Europe/Berlin"))
 
-# "told" holds the jokes already used in the current cycle, by full text — so
-# editing/reordering jokes.txt never desyncs it and new jokes count as untold.
+# "told" holds the line-indices (0-based) of jokes already used this cycle.
+# Append new jokes to the END of jokes.txt — that keeps existing indices stable.
+# Reordering/deleting existing lines mid-cycle can shift tracking by one cycle.
 _DEFAULT_CONFIG = {"enabled": True, "hour": 18, "minute": 0, "told": []}
 
 # ── Joke list ───────────────────────────────────────────────────────────────────
@@ -71,19 +72,21 @@ def _pick_joke() -> str:
     used, the cycle resets and all jokes become available again — so nothing
     repeats until the whole list is exhausted. Persists progress to config."""
     cfg  = _load_cfg()
-    told = cfg.get("told", [])
+    n    = len(JOKES)
+    # Keep only valid indices (drops stale ones if jokes.txt shrank).
+    told = [i for i in cfg.get("told", []) if 0 <= i < n]
 
-    remaining = [j for j in JOKES if j not in told]
+    remaining = [i for i in range(n) if i not in told]
     if not remaining:                 # whole list exhausted → start a fresh cycle
         last      = told[-1] if told else None
         told      = []
-        remaining = [j for j in JOKES if j != last] or list(JOKES)  # avoid back-to-back
+        remaining = [i for i in range(n) if i != last] or list(range(n))  # avoid back-to-back
 
-    joke = random.choice(remaining)
-    told.append(joke)
+    idx = random.choice(remaining)
+    told.append(idx)
     cfg["told"] = told
     _save_cfg(cfg)
-    return joke
+    return JOKES[idx]
 
 
 # ── Scheduler ───────────────────────────────────────────────────────────────────
