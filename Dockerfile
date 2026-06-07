@@ -14,6 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY bot.py .
 COPY version.py .
 COPY statuses.txt .
+COPY jokes.txt .
 COPY plugins/ ./plugins/
 
 # Create data directory for persistent memory
