@@ -9,6 +9,7 @@ import base64
 import re
 import random
 import uuid
+from collections import OrderedDict
 from datetime import datetime, timezone, timedelta, time as dt_time
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -55,6 +56,7 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
 RECENT_WINDOW       = int(os.environ.get("RECENT_WINDOW", "8"))   # last N messages kept at full length; older ones truncated hard
+MAX_CONTEXT_IMAGES  = int(os.environ.get("MAX_CONTEXT_IMAGES", "8"))  # cap on images embedded into history context (most recent kept)
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
 
 # ── Model slots ───────────────────────────────────────────────────────────────
@@ -569,6 +571,18 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # Anthropic API hard limit
 # Matches direct image URLs in message text (e.g. https://example.com/foo.gif?v=1)
 IMAGE_URL_RE = re.compile(r'https?://\S+\.(?:jpe?g|png|gif|webp)(?:[?#]\S*)?', re.IGNORECASE)
 
+# GIF-host page links (Tenor / Giphy / klipy). Discord renders these as gifv/video
+# embeds whose animated media is an mp4, not a plain image URL — so we fall back to
+# the page's og:image meta tag (a still frame or the gif itself).
+_GIF_HOST_RE = re.compile(
+    r'https?://(?:www\.)?(?:[a-z0-9-]+\.)?(?:tenor\.com|giphy\.com|klipy\.com)/\S+',
+    re.IGNORECASE,
+)
+_OG_IMAGE_RES = (
+    re.compile(r'<meta[^>]+(?:property|name)=["\']og:image(?::url)?["\'][^>]*\bcontent=["\']([^"\']+)["\']', re.IGNORECASE),
+    re.compile(r'<meta[^>]+\bcontent=["\']([^"\']+)["\'][^>]*(?:property|name)=["\']og:image(?::url)?["\']', re.IGNORECASE),
+)
+
 _IMAGE_FORMAT_MAP = {"PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp"}
 
 def _detect_image_ct(data: bytes, fallback: str) -> str:
@@ -603,6 +617,38 @@ def _compress_image(data: bytes, content_type: str) -> tuple[bytes, str]:
         scale *= 0.7  # shrink dimensions by ~30% each extra pass
     raise ValueError(f"Image could not be compressed below 5 MB ({len(data)/1024/1024:.1f} MB)")
 
+async def _url_to_image_block(session, url: str) -> dict | None:
+    """Download an image URL → Anthropic image block, or None if it isn't a usable image."""
+    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+        ct = (resp.headers.get("content-type", "")).split(";")[0].strip()
+        if ct not in SUPPORTED_IMAGE_TYPES:
+            return None
+        data = await resp.read()
+    ct = _detect_image_ct(data, ct)
+    if len(data) > MAX_IMAGE_BYTES:
+        data, ct = await asyncio.to_thread(_compress_image, data, ct)
+    b64 = base64.standard_b64encode(data).decode()
+    return {"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}}
+
+async def _og_image_url(session, page_url: str) -> str | None:
+    """Fetch a web page and return its og:image URL, or None."""
+    try:
+        async with session.get(
+            page_url, timeout=aiohttp.ClientTimeout(total=10),
+            headers={"User-Agent": "Mozilla/5.0 (compatible; MarvinBot/1.0)"},
+        ) as resp:
+            if resp.status != 200:
+                return None
+            html = await resp.text(errors="ignore")
+    except Exception as e:
+        log.warning(f"Failed to fetch GIF-host page ({page_url}): {e}")
+        return None
+    for rx in _OG_IMAGE_RES:
+        m = rx.search(html)
+        if m:
+            return m.group(1)
+    return None
+
 async def fetch_images(attachments: list, embeds: list = None, content: str = "") -> list[dict]:
     blocks: list[dict] = []
     urls_seen: set[str] = set()
@@ -627,27 +673,41 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
             except Exception as e:
                 log.warning(f"Failed to load image ({att.filename}): {e}")
 
-        # 2. Discord link-preview embeds (image/thumbnail fields)
+        # 2. Discord link-preview embeds. Standard embeds expose visual content in
+        #    .image and .thumbnail (we use both); .video is an mp4/webm Anthropic
+        #    can't ingest, and author/footer icons aren't shared content. For
+        #    GIF-host embeds (Tenor / Giphy / klipy) the media is a video, so when
+        #    image/thumbnail yield nothing we fall back to the page's og:image.
+        scraped_pages: set[str] = set()
         for embed in (embeds or []):
+            got = False
             for img in filter(None, [embed.image, embed.thumbnail]):
                 url = img.proxy_url or img.url
                 if not url or url in urls_seen:
                     continue
                 urls_seen.add(url)
                 try:
-                    async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        ct = (resp.headers.get("content-type", "")).split(";")[0].strip()
-                        if ct not in SUPPORTED_IMAGE_TYPES:
-                            continue
-                        data = await resp.read()
-                    ct = _detect_image_ct(data, ct)
-                    if len(data) > MAX_IMAGE_BYTES:
-                        data, ct = await asyncio.to_thread(_compress_image, data, ct)
-                    b64 = base64.standard_b64encode(data).decode()
-                    blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
-                    log.info(f"Embed image loaded: {url}")
+                    block = await _url_to_image_block(session, url)
                 except Exception as e:
                     log.warning(f"Failed to load embed image ({url}): {e}")
+                    continue
+                if block:
+                    blocks.append(block)
+                    got = True
+                    log.info(f"Embed image loaded: {url}")
+            if not got and embed.url and _GIF_HOST_RE.match(embed.url):
+                scraped_pages.add(embed.url)
+                img_url = await _og_image_url(session, embed.url)
+                if img_url and img_url not in urls_seen:
+                    urls_seen.add(img_url)
+                    try:
+                        block = await _url_to_image_block(session, img_url)
+                    except Exception as e:
+                        log.warning(f"Failed to load GIF-host image ({img_url}): {e}")
+                        block = None
+                    if block:
+                        blocks.append(block)
+                        log.info(f"GIF-host image loaded: {embed.url} → {img_url}")
 
         # 3. Direct image URLs in message text (e.g. https://example.com/pic.gif)
         for url in IMAGE_URL_RE.findall(content):
@@ -655,20 +715,52 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                 continue
             urls_seen.add(url)
             try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    ct = (resp.headers.get("content-type", "")).split(";")[0].strip()
-                    if ct not in SUPPORTED_IMAGE_TYPES:
-                        continue
-                    data = await resp.read()
-                ct = _detect_image_ct(data, ct)
-                if len(data) > MAX_IMAGE_BYTES:
-                    data, ct = await asyncio.to_thread(_compress_image, data, ct)
-                b64 = base64.standard_b64encode(data).decode()
-                blocks.append({"type": "image", "source": {"type": "base64", "media_type": ct, "data": b64}})
-                log.info(f"URL image loaded: {url}")
+                block = await _url_to_image_block(session, url)
             except Exception as e:
                 log.warning(f"Failed to load URL image ({url}): {e}")
+                continue
+            if block:
+                blocks.append(block)
+                log.info(f"URL image loaded: {url}")
 
+        # 4. GIF-host page links in the text that Discord hasn't (yet) embedded.
+        for m in _GIF_HOST_RE.finditer(content):
+            page_url = m.group(0)
+            if page_url in scraped_pages:
+                continue
+            scraped_pages.add(page_url)
+            img_url = await _og_image_url(session, page_url)
+            if not img_url or img_url in urls_seen:
+                continue
+            urls_seen.add(img_url)
+            try:
+                block = await _url_to_image_block(session, img_url)
+            except Exception as e:
+                log.warning(f"Failed to load GIF-host image ({img_url}): {e}")
+                continue
+            if block:
+                blocks.append(block)
+                log.info(f"GIF-host image loaded: {page_url} → {img_url}")
+
+    return blocks
+
+# Per-message image cache: message.id → list of image blocks. Message attachments
+# are immutable, so once fetched an image never needs re-downloading. Bounded LRU
+# so fetch_context can embed history images on every call without re-fetching.
+_IMAGE_CACHE: "OrderedDict[int, list[dict]]" = OrderedDict()
+_IMAGE_CACHE_MAX = 256
+
+async def _fetch_message_images(msg) -> list[dict]:
+    """Fetch (and cache) the image blocks for a single Discord message."""
+    cached = _IMAGE_CACHE.get(msg.id)
+    if cached is not None:
+        _IMAGE_CACHE.move_to_end(msg.id)
+        return cached
+    blocks = await fetch_images(msg.attachments, list(msg.embeds), msg.content or "")
+    _IMAGE_CACHE[msg.id] = blocks
+    _IMAGE_CACHE.move_to_end(msg.id)
+    while len(_IMAGE_CACHE) > _IMAGE_CACHE_MAX:
+        _IMAGE_CACHE.popitem(last=False)
     return blocks
 
 # ── Claude ───────────────────────────────────────────────────────────────────
@@ -743,34 +835,73 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     raw = []
     async for msg in channel.history(**kwargs):
         raw.append(msg)
-    messages = []
-    for msg in reversed(raw):
-        ts = _msg_ts(msg.created_at)
-        def _rxn_str(reactions):
-            parts = [
-                f"{str(r.emoji) if isinstance(r.emoji, str) else f':{r.emoji.name}:'}×{r.count}"
-                for r in reactions
-            ]
-            return f" [{' '.join(parts)}]" if parts else ""
+    chrono = list(reversed(raw))
 
+    # Fetch images for every human message that may carry one — concurrently and
+    # cached by message id — so the bot can see all images in its context window,
+    # not just the triggering message.
+    img_candidates = [
+        m for m in chrono
+        if m.author != bot.user
+        and (m.attachments or m.embeds or IMAGE_URL_RE.search(m.content or ""))
+    ]
+    img_results = await asyncio.gather(
+        *(_fetch_message_images(m) for m in img_candidates),
+        return_exceptions=True,
+    )
+    img_by_id = {
+        m.id: (r if isinstance(r, list) else [])
+        for m, r in zip(img_candidates, img_results)
+    }
+
+    def _rxn_str(reactions):
+        parts = [
+            f"{str(r.emoji) if isinstance(r.emoji, str) else f':{r.emoji.name}:'}×{r.count}"
+            for r in reactions
+        ]
+        return f" [{' '.join(parts)}]" if parts else ""
+
+    messages = []
+    msg_ids  = []   # parallel: discord message id per entry (None for assistant)
+    for msg in chrono:
+        ts = _msg_ts(msg.created_at)
         if msg.author == bot.user:
             assistant_content = (msg.content or "") + _rxn_str(msg.reactions)
             messages.append({"role": "assistant", "content": assistant_content.strip()})
+            msg_ids.append(None)
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             content += _rxn_str(msg.reactions)
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
+            msg_ids.append(msg.id)
     # Truncate older *user* messages to reduce their influence on the response.
     # Assistant messages are never truncated — the bot must always see what it previously said.
     cutoff = len(messages) - RECENT_WINDOW
     for i, m in enumerate(messages):
         if i < cutoff and m["role"] == "user" and isinstance(m["content"], str) and len(m["content"]) > 80:
             messages[i] = {**m, "content": m["content"][:80] + "…"}
+
+    # Embed images into their messages, newest-first, up to MAX_CONTEXT_IMAGES total.
+    budget = MAX_CONTEXT_IMAGES
+    n_img  = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if budget <= 0:
+            break
+        blocks = img_by_id.get(msg_ids[i])
+        if not blocks:
+            continue
+        blocks = blocks[:budget]
+        budget -= len(blocks)
+        n_img  += len(blocks)
+        text_content = messages[i]["content"]
+        text_blocks = text_content if isinstance(text_content, list) else [{"type": "text", "text": text_content}]
+        messages[i] = {**messages[i], "content": [*text_blocks, *blocks]}
+
     n_user = sum(1 for m in messages if m["role"] == "user")
     n_asst = sum(1 for m in messages if m["role"] == "assistant")
-    log.info(f"fetch_context #{channel_id}: {len(messages)} msgs ({n_user} user, {n_asst} assistant), cutoff={max(cutoff,0)}, recent={min(RECENT_WINDOW, len(messages))}")
+    log.info(f"fetch_context #{channel_id}: {len(messages)} msgs ({n_user} user, {n_asst} assistant, {n_img} images), cutoff={max(cutoff,0)}, recent={min(RECENT_WINDOW, len(messages))}")
     if messages:
         last = messages[-1]
         log.info(f"fetch_context #{channel_id}: last msg role={last['role']} content={str(last['content'])[:80]!r}")
@@ -792,6 +923,11 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         hist_content = last["content"]
         if isinstance(hist_content, str):
             messages[-1] = {**last, "content": [{"type": "text", "text": hist_content, "cache_control": {"type": "ephemeral"}}]}
+        elif isinstance(hist_content, list) and hist_content and isinstance(hist_content[-1], dict):
+            # Last history message carries images — cache its final block.
+            new_content = list(hist_content)
+            new_content[-1] = {**new_content[-1], "cache_control": {"type": "ephemeral"}}
+            messages[-1] = {**last, "content": new_content}
     now_ts = datetime.now(TZ).strftime("%H:%M")
     content: list = [{"type": "text", "text": f"[{now_ts}] {username}: {user_message}"}]
     if image_blocks:
@@ -821,6 +957,14 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     return bool(reply) and not reply.upper().startswith("SKIP")
 
 from plugins.base import clean_chat_reply as _clean_chat_reply  # noqa: E402
+from plugins.base import split_message as _split_message  # noqa: E402
+
+
+async def _send_chat_reply(channel, reply: str, prefix: str = "") -> None:
+    """Clean a conversational reply and send it, splitting into multiple
+    messages if it exceeds Discord's 2000-char limit."""
+    for chunk in _split_message(prefix + _clean_chat_reply(reply)):
+        await channel.send(chunk)
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
@@ -997,7 +1141,7 @@ async def daily_digest():
             log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
             continue
 
-        await channel.send(f"**Tagesrückblick** 🌙\n{_clean_chat_reply(summary)}")
+        await _send_chat_reply(channel, summary, prefix="**Tagesrückblick** 🌙\n")
         log.info(f"Digest #{channel_id}: posted")
 
         # Extract structured atomic facts from the same chat log and store them
@@ -1121,7 +1265,7 @@ async def _try_proactive(channel_id: int):
 
     log.info(f"Proactive #{channel_id}: sending '{reply[:80]}'")
     _proactive_last_sent[channel_id] = now.timestamp()
-    await channel.send(_clean_chat_reply(reply))
+    await _send_chat_reply(channel, reply)
 
 
 @tasks.loop(minutes=PROACTIVE_CHECK_MINUTES)
@@ -1359,7 +1503,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 _bot_asked_question[channel_id] = reply.rstrip().endswith("?")
                 async with channel.typing():
                     await asyncio.sleep(0.3)
-                await channel.send(_clean_chat_reply(reply))
+                await _send_chat_reply(channel, reply)
             else:
                 log.info(f"Channel #{channel_id}: SKIP")
                 emoji = await get_emoji_reaction(last_msg.content)
