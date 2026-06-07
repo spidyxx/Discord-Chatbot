@@ -1,0 +1,35 @@
+# Witze für den täglichen Witz (joke-Plugin).
+# Ein Witz pro Zeile. Leerzeilen und Zeilen mit # werden ignoriert.
+# Mehrzeilige Witze sind nicht möglich – alles in eine Zeile.
+# Für ein ganzes Jahr werden ~365 Einträge gebraucht.
+
+Treffen sich zwei Magneten. Sagt der eine: „Was soll ich heute bloß anziehen?“
+Was macht ein Pirat am Computer? Er drückt die Enter-Taste.
+Wie nennt man einen Bumerang, der nicht zurückkommt? Stock.
+Was ist orange und geht über Berge? Eine Wanderine.
+Geht ein Cowboy zum Friseur. Kommt er raus – Pony weg.
+Was sagt ein Mathematiker, wenn er aufs Klo geht? „Ich muss mal kurz die Wurzel ziehen.“
+Warum können Geister so schlecht lügen? Weil man durch sie hindurchsieht.
+Was ist grün und steht vor der Tür? Ein Klopfsalat.
+Treffen sich zwei Kerzen. Sagt die eine: „Ist Wasser eigentlich gefährlich?“ Sagt die andere: „Ja, davon kannst du ausgehen.“
+Was macht ein Keks unter einem Baum? Krümel.
+Wie heißt ein Boomerang, der funktioniert? Boomerang. Der andere heißt Stock.
+Warum nehmen Bienen keinen Kredit auf? Weil sie schon ihren Stock haben.
+Was sitzt auf dem Baum und schreit „Aha“? Ein Uhu mit Sprachfehler.
+Treffen sich zwei Jäger. Beide tot.
+Was ist braun und schaut durchs Schlüsselloch? Ein Spannferkel.
+Warum hat der Pilz so viele Freunde? Weil er ein Schwammerl ist – und überall andockt.
+Was ist weiß und stört beim Frühstück? Eine Lawine.
+Wie nennt man einen Frosch ohne Beine? Egal, er kommt eh nicht.
+Was ist gelb und kann nicht schwimmen? Ein Bagger.
+Warum gehen Skelette nicht auf Partys? Weil sie niemanden zum Mitbringen haben – kein Herz, keine Begleitung.
+Was sagt ein 0 zu einer 8? „Schicker Gürtel!“
+Wie nennt man einen dicken Vegetarier? Biotonne.
+Was ist rot und schlecht für die Zähne? Ein Ziegelstein.
+Treffen sich zwei Schnecken an einer Kreuzung. Kracht's.
+Warum trinken Mäuse keinen Alkohol? Aus Angst vor dem Kater.
+Was ist klein, braun und läuft durch den Wald? Ein Hermelin auf Speed.
+Wie nennt man eine Gruppe von Walen mit Instrumenten? Eine Orca-strer.
+Was macht eine Wolke mit Juckreiz? Sie kratzt sich am Donner.
+Warum war die Tomate rot? Weil sie den Salat gesehen hat… anziehen.
+Was ist der Unterschied zwischen einem Känguru und einem Kängurum? Das eine springt, das andere kängurt.

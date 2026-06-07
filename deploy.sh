@@ -17,11 +17,13 @@ deploy() {
     --exclude='.git' --exclude='*.pyc' --exclude='data/' --exclude='logs/' --exclude='.env' \
     --exclude='plugins/**/*.cfg' \
     --exclude='statuses.txt' \
+    --exclude='jokes.txt' \
     ./ "$UNRAID:$REMOTE_DIR/"
-  # Plugin configs and statuses.txt are first-seeded then preserved across deploys
-  # so per-bot customisations survive.
+  # Plugin configs, statuses.txt and jokes.txt are first-seeded then preserved
+  # across deploys so per-bot customisations survive.
   rsync -av --ignore-existing plugins/core/*.cfg "$UNRAID:$REMOTE_DIR/plugins/core/"
   rsync -av --ignore-existing statuses.txt "$UNRAID:$REMOTE_DIR/"
+  rsync -av --ignore-existing jokes.txt "$UNRAID:$REMOTE_DIR/"
 
   echo "Rebuilding container..."
   ssh "$UNRAID" "

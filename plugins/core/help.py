@@ -46,6 +46,11 @@ In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergr
 `@{n} zeig mir den Songtext zu <Künstler> - <Titel>` – holt den Songtext (Format mit Bindestrich)
 `@{n} <genius.com-url>` – Songtext direkt von einer Genius-URL
 
+😂 **Witze** *(alle Kanäle)*
+`@{n} erzähl einen Witz` – Witz aus der Liste, sofort
+`@{n} täglichen Witz an` / `aus` – täglichen Witz ein-/ausschalten *(Admins/Mods)*
+`@{n} täglichen Witz um 18:00` – Uhrzeit festlegen *(Admins/Mods)*
+
 🔇 **Stummschalten** *(alle Kanäle)*
 `@{n} shut up` *(oder ähnliches)* – ich schweige
 `@{n}` *(irgendwas)* – reaktiviert mich wieder
