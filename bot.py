@@ -1499,6 +1499,9 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             log.warning(f"Channel #{channel_id}: channel object not found")
             return
 
+        original_trigger = trigger_msg  # preserved across retries (None on retry)
+        first_iteration  = True
+
         while True:
             # Cooldown check on every iteration so a second loop pass (triggered by
             # _channel_pending) can't bypass the cooldown set by the first response.
@@ -1528,15 +1531,50 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             last_msg = all_msgs[-1] if all_msgs else None
 
             if current_trigger is not None:
-                # Use the known triggering message regardless of what history returned.
-                # Discord may not have indexed it yet (race between gateway event and REST).
-                last_msg      = current_trigger
-                trigger_name  = current_trigger.author.display_name
-                trigger_ts    = _msg_ts(current_trigger.created_at)
-                trigger_line  = f"[{trigger_ts}] {trigger_name}: {current_trigger.content or ''}"
-                # Append to context if history didn't include it yet
-                if not recent_lines or recent_lines[-1] != trigger_line:
-                    recent_lines.append(trigger_line)
+                # On retry, if the pending message doesn't address the bot but the
+                # original trigger did, keep the original trigger so we don't lose
+                # a direct @mention just because someone else posted in between.
+                trigger_addr_bot = (
+                    bot.user in current_trigger.mentions
+                    or BOT_NAME.lower() in (current_trigger.content or "").lower()
+                )
+                if not first_iteration and not trigger_addr_bot and original_trigger is not None:
+                    log.info(f"Channel #{channel_id}: pending msg from {current_trigger.author.display_name} not addressed to bot — keeping original trigger")
+                    # Don't replace last_msg; just ensure the new message is in context
+                    pending_name = current_trigger.author.display_name
+                    pending_ts   = _msg_ts(current_trigger.created_at)
+                    pending_line  = f"[{pending_ts}] {pending_name}: {current_trigger.content or ''}"
+                    if not recent_lines or recent_lines[-1] != pending_line:
+                        recent_lines.append(pending_line)
+                    # original_trigger stays as last_msg (set below or from history)
+                else:
+                    # Use the known triggering message regardless of what history returned.
+                    # Discord may not have indexed it yet (race between gateway event and REST).
+                    last_msg      = current_trigger
+                    trigger_name  = current_trigger.author.display_name
+                    trigger_ts    = _msg_ts(current_trigger.created_at)
+                    trigger_line  = f"[{trigger_ts}] {trigger_name}: {current_trigger.content or ''}"
+                    # Append to context if history didn't include it yet
+                    if not recent_lines or recent_lines[-1] != trigger_line:
+                        recent_lines.append(trigger_line)
+                    if first_iteration:
+                        original_trigger = current_trigger
+
+            # On retry, if last_msg (from history) is not addressed to the bot
+            # but the original trigger was, keep the original trigger.
+            if not first_iteration and original_trigger is not None:
+                last_addr_bot = (
+                    bot.user in last_msg.mentions
+                    or BOT_NAME.lower() in (last_msg.content or "").lower()
+                )
+                orig_addr_bot = (
+                    bot.user in original_trigger.mentions
+                    or BOT_NAME.lower() in (original_trigger.content or "").lower()
+                )
+                if not last_addr_bot and orig_addr_bot:
+                    log.info(f"Channel #{channel_id}: last_msg ({last_msg.author.display_name}) not addressed to bot — falling back to original trigger")
+                    last_msg = original_trigger
+
             else:
                 if not last_msg:
                     log.info(f"Channel #{channel_id}: no messages in history — skipping")
@@ -1623,6 +1661,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             # New message(s) arrived while we were generating — re-read and try again
             if _channel_pending.get(channel_id):
                 log.info(f"Channel #{channel_id}: new messages arrived during evaluation — retrying with current context")
+                first_iteration = False
                 continue
 
             if respond:
