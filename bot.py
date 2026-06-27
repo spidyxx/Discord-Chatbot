@@ -510,6 +510,8 @@ def _to_text_messages(messages: list) -> list:
 
     Strips image blocks and cache_control. Merges consecutive same-role
     messages, which the OpenAI chat format does not allow.
+    Also strips raw tool-call XML from assistant messages that may have
+    been stored in history before the output stripping was added.
     """
     result = []
     for msg in messages:
@@ -527,6 +529,11 @@ def _to_text_messages(messages: list) -> list:
             continue
         if not text:
             continue
+        # Strip hallucinated tool-call XML from history (poisons the model)
+        if msg["role"] == "assistant":
+            text = _strip_raw_tool_calls(text)
+            if not text:
+                continue
         if result and result[-1]["role"] == msg["role"]:
             result[-1]["content"] += "\n" + text
         else:
@@ -695,11 +702,15 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
     )
-    return _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
+    text = _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
+    if not text:
+        log.warning(f"Empty reply from {model} after max rounds (raw was {len(response.choices[0].message.content or '')} chars)")
+    return text or "(no response — tool loop exhausted all rounds)"
 
 def _strip_raw_tool_calls(text: str) -> str:
     """Strip raw XML/DSML tool-call syntax hallucinated into text output by some models."""
     import re as _re
+    before = len(text)
     # Strip DSML markup: the model wraps tags in ｜DSML｜ (fullwidth vertical bars + DSML)
     # Discord renders these as <function_calls>, <invoke>, etc.
     text = _re.sub(r'[\uff5c\u2016]{1,2}\s*DSML\s*[\uff5c\u2016]{1,2}', '', text)
@@ -710,6 +721,9 @@ def _strip_raw_tool_calls(text: str) -> str:
     text = _re.sub(r'<\s*/?\s*parameter[^>]*>.*?<\s*/\s*parameter\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
     # Remove any remaining orphaned XML tags (including DSML-stripped ones like <tool_calls>)
     text = _re.sub(r'<\s*/?\s*(?:function_calls|tool_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=_re.IGNORECASE)
+    after = len(text.strip())
+    if before > after:
+        log.info(f"_strip_raw_tool_calls: {before} → {after} chars")
     return text.strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
