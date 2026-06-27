@@ -556,10 +556,12 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
     return text
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+    # Let the model know web search is available (enable_search is enabled below).
+    system = "Du hast Zugriff auf Echtzeit-Websuche. Nutze sie, wenn du aktuelle Informationen brauchst.\n\n" + system
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
-    # DeepSeek reasoning models (v4-pro, reasoner, etc.) spend hidden reasoning
-    # tokens against the output budget — same problem as Gemini. Multiply generously
-    # so reasoning leaves enough headroom for a complete visible reply.
+    # DeepSeek reasoning models spend hidden reasoning tokens against the output
+    # budget — same problem as Gemini. Multiply generously so reasoning leaves
+    # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
