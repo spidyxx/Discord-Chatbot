@@ -583,7 +583,7 @@ async def _ddg_search(query: str) -> str:
                 headers={"User-Agent": "Mozilla/5.0"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                data = await resp.json()
+                data = await resp.json(content_type=None)
     except Exception as e:
         log.warning(f"DDG search failed for '{query[:60]}': {e}")
         return ""
