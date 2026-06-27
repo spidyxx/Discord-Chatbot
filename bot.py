@@ -574,40 +574,23 @@ _DEEPSEEK_TOOLS = [{
 
 
 async def _ddg_search(query: str) -> str:
-    """Search DuckDuckGo via lite.duckduckgo.com (simple HTML, no JS)."""
-    import bs4
+    """Search DuckDuckGo via duckduckgo_search library (handles everything reliably)."""
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://lite.duckduckgo.com/lite/",
-                data={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36", "Content-Type": "application/x-www-form-urlencoded"},
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                html = await resp.text()
+        from duckduckgo_search import DDGS
+        results = await asyncio.to_thread(
+            lambda: list(DDGS().text(query, max_results=5))
+        )
     except Exception as e:
         log.warning(f"DDG search failed for '{query[:60]}': {e}")
         return ""
 
-    soup = bs4.BeautifulSoup(html, "html.parser")
-    results = []
-    # Lite DDG: each result is a <tr> with a link, followed by a <tr> with snippet
-    rows = soup.select("table tr")
-    i = 0
-    while i < len(rows) and len(results) < 5:
-        link = rows[i].select_one("a.result-link")
-        if link:
-            title = link.get_text(strip=True)
-            url = link.get("href", "")
-            snippet = ""
-            if i + 1 < len(rows):
-                snip_cell = rows[i + 1].select_one("td.result-snippet")
-                if snip_cell:
-                    snippet = snip_cell.get_text(" ", strip=True)
-            results.append(f"- {title}\n  {snippet}\n  {url}")
-            i += 1  # skip snippet row
-        i += 1
-    return "\n".join(results) if results else ""
+    lines = []
+    for r in results:
+        title = r.get("title", "")
+        body = r.get("body", "")
+        href = r.get("href", "")
+        lines.append(f"- {title}\n  {body}\n  {href}")
+    return "\n".join(lines) if lines else ""
 
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:

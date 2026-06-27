@@ -7,3 +7,4 @@ youtube-transcript-api>=0.6.0
 trafilatura>=1.6.0
 faster-whisper>=1.0.3
 beautifulsoup4>=4.12
+duckduckgo_search>=7.0
