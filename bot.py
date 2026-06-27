@@ -560,8 +560,10 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     # DeepSeek reasoning models (v4-pro, reasoner, etc.) spend hidden reasoning
     # tokens against the output budget — same problem as Gemini. Multiply generously
     # so reasoning leaves enough headroom for a complete visible reply.
+    expanded = min(max_tokens * 16, 65536)
+    log.info(f"DeepSeek call: model={model} max_tokens_in={max_tokens} max_tokens_out={expanded}")
     response = await _deepseek_client.chat.completions.create(
-        model=model, messages=openai_messages, max_tokens=min(max_tokens * 8, 65536),
+        model=model, messages=openai_messages, max_tokens=expanded,
         extra_body={"enable_search": True},
     )
     text = (response.choices[0].message.content or "").strip()
