@@ -564,9 +564,19 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     log.info(f"DeepSeek call: model={model} max_tokens_in={max_tokens} max_tokens_out={expanded}")
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
-        extra_body={"enable_search": True},
+        tools=[{"type": "web_search", "web_search": {"enable": True}}],
     )
-    text = (response.choices[0].message.content or "").strip()
+    msg = response.choices[0].message
+    # If the model returned tool calls (search queries), the content may be None;
+    # extract any search results from the tool calls.
+    text = (msg.content or "").strip()
+    if not text and msg.tool_calls:
+        # DeepSeek may return search results as tool call arguments — extract what we can.
+        parts = []
+        for tc in msg.tool_calls:
+            if hasattr(tc, "function") and hasattr(tc.function, "arguments"):
+                parts.append(str(tc.function.arguments))
+        text = "\n".join(parts).strip()
     if not text:
         finish = getattr(response.choices[0], "finish_reason", "?")
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
