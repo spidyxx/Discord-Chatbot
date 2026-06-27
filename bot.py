@@ -569,7 +569,12 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
         model=model, messages=openai_messages, max_tokens=expanded,
         extra_body={"web_search": True},
     )
-    text = (response.choices[0].message.content or "").strip()
+    msg = response.choices[0].message
+    text = (msg.content or "").strip()
+    # Log whether search results came back in the response
+    extra_fields = {k: v for k, v in response.model_dump().items() if k not in ("choices", "id", "model", "object", "created", "usage")}
+    if extra_fields:
+        log.info(f"DeepSeek extra response fields: {extra_fields}")
     if not text:
         finish = getattr(response.choices[0], "finish_reason", "?")
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
