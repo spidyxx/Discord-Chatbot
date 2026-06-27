@@ -66,6 +66,7 @@ CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
 EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
 GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
+DEEPSEEK_API_KEY    = os.environ.get("DEEPSEEK_API_KEY", "")
 
 # ── Tier assignments ──────────────────────────────────────────────────────────
 def _tier_env(name: str, default: str) -> str:
@@ -163,6 +164,14 @@ if GEMINI_API_KEY:
     _gemini_client = _AsyncOpenAI(
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         api_key=GEMINI_API_KEY,
+    )
+
+_deepseek_client = None
+if DEEPSEEK_API_KEY:
+    from openai import AsyncOpenAI as _AsyncOpenAI2
+    _deepseek_client = _AsyncOpenAI2(
+        base_url="https://api.deepseek.com/v1",
+        api_key=DEEPSEEK_API_KEY,
     )
 
 intents = discord.Intents.default()
@@ -546,6 +555,17 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
     return text
 
+async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    response = await _deepseek_client.chat.completions.create(
+        model=model, messages=openai_messages, max_tokens=max_tokens,
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        finish = getattr(response.choices[0], "finish_reason", "?")
+        log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
+    return text
+
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
     base = _base_prompt(channel_id)
@@ -773,6 +793,8 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
     model = _model_for_tier(tier)
     if model.startswith("gemini"):
         return await _gemini_call(system, messages, max_tokens, model)
+    if model.startswith("deepseek"):
+        return await _deepseek_call(system, messages, max_tokens, model)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
     # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
@@ -799,6 +821,8 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
     model = _model_for_tier(tier)
     if model.startswith("gemini"):
         return await _gemini_call(system, messages, max_tokens, model)
+    if model.startswith("deepseek"):
+        return await _deepseek_call(system, messages, max_tokens, model)
     response = await asyncio.to_thread(
         anthropic.messages.create,
         model=model, max_tokens=max_tokens,
@@ -1314,7 +1338,7 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else ""))
+    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else "") + (" | deepseek: enabled" if DEEPSEEK_API_KEY else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
 
