@@ -558,7 +558,7 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
 # ── DeepSeek web search is enabled via extra_body below ──────────────────────
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
-    # Let the model know web search is available (enable_search is enabled below).
+    # Let the model know web search is available (web_search is enabled below).
     system = "Du hast Zugriff auf Echtzeit-Websuche. Nutze sie, wenn du aktuelle Informationen brauchst.\n\n" + system
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
     # DeepSeek reasoning models spend hidden reasoning tokens against the output
@@ -567,7 +567,7 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     expanded = min(max_tokens * 16, 65536)
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
-        extra_body={"enable_search": True},
+        extra_body={"web_search": True},
     )
     text = (response.choices[0].message.content or "").strip()
     if not text:
