@@ -557,9 +557,6 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
 
 # ── Client-side web search for DeepSeek (DuckDuckGo HTML, no API key) ─────────
 
-_DDG_SEARCH_URL = "https://html.duckduckgo.com/html/"
-_DDGA_SEARCH_URL = "https://lite.duckduckgo.com/lite/"
-
 _DEEPSEEK_TOOLS = [{
     "type": "function",
     "function": {
@@ -581,10 +578,10 @@ async def _ddg_search(query: str) -> str:
     import bs4
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                _DDGA_SEARCH_URL,
-                params={"q": query},
-                headers={"User-Agent": "Mozilla/5.0"},
+            async with session.post(
+                "https://html.duckduckgo.com/html/",
+                data={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 html = await resp.text()
@@ -594,14 +591,21 @@ async def _ddg_search(query: str) -> str:
 
     soup = bs4.BeautifulSoup(html, "html.parser")
     results = []
-    for row in soup.select("table.result")[:5]:
-        link = row.select_one("a.result-link")
-        snippet = row.select_one("td.result-snippet")
+    for r in soup.select(".result")[:5]:
+        link = r.select_one(".result__a") or r.select_one("a.result__a")
+        snippet = r.select_one(".result__snippet")
         if link:
             title = link.get_text(strip=True)
             url = link.get("href", "")
-            desc = snippet.get_text(strip=True) if snippet else ""
+            desc = snippet.get_text(" ", strip=True) if snippet else ""
             results.append(f"- {title}\n  {desc}\n  {url}")
+    if not results:
+        # Fallback: try extracting any links with snippets
+        for r in soup.select("a[href^='http']")[:5]:
+            parent = r.find_parent("td") or r.find_parent("div")
+            text = parent.get_text(" ", strip=True)[:300] if parent else ""
+            if r.get_text(strip=True) and "duckduckgo" not in r.get("href", "").lower():
+                results.append(f"- {r.get_text(strip=True)}\n  {text}\n  {r['href']}")
     return "\n".join(results) if results else ""
 
 
