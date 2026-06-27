@@ -569,15 +569,19 @@ def _to_openai_messages(messages: list) -> list:
             result.append({"role": role, "content": new_content})
     return result
 
-def _to_text_messages(messages: list) -> list:
+def _to_text_messages(messages: list, annotate_images: bool = False) -> list:
     """Flatten Anthropic-style messages to text for non-vision models.
 
     Strips image blocks and cache_control. Merges consecutive same-role
     messages. Also strips raw tool-call XML from assistant messages.
+
+    If annotate_images is True, adds [HINWEIS: N Bild(er) ...] markers so
+    text-only models know images exist but can honestly say they can't see them.
     """
     result = []
     for msg in messages:
         content = msg["content"]
+        image_count = 0
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
@@ -587,9 +591,14 @@ def _to_text_messages(messages: list) -> list:
                     continue
                 if b.get("type") == "text":
                     texts.append(b["text"])
+                elif b.get("type") == "image":
+                    image_count += 1
             text = " ".join(texts).strip()
         else:
             continue
+        if annotate_images and image_count:
+            note = f"[HINWEIS: {image_count} Bild(er) angehängt — du kannst Bilder NICHT sehen, nur Text. Sag ehrlich, dass du das Bild nicht sehen kannst.]"
+            text = f"{text}\n{note}" if text else note
         if not text:
             continue
         if msg["role"] == "assistant":
@@ -713,7 +722,9 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     # budget — same problem as Gemini. Multiply generously so reasoning leaves
     # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
-    openai_messages = [{"role": "system", "content": system}] + _to_openai_messages(messages)
+    # DeepSeek V4 models are text-only (no vision support). Use text with
+    # image annotations so the model honestly says it can't see them.
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
 
     for _ in range(4):  # max 4 tool-call rounds
         response = await _deepseek_client.chat.completions.create(
