@@ -561,11 +561,17 @@ _DEEPSEEK_TOOLS = [{
     "type": "function",
     "function": {
         "name": "web_search",
-        "description": "Search the web for current, real-time information. Use for weather, news, facts you're unsure about.",
+        "description": (
+            "Search the web via DuckDuckGo for current information. "
+            "Use simple keyword queries (2-5 words), NO operators like site:, AND, OR, quotes. "
+            "For weather: 'Wetter Stadtname' or 'Wetter Stadtname Wochenende'. "
+            "Read results carefully — the answer is often in the first results. "
+            "Make at most 2 searches, then answer from what you have."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {"type": "string", "description": "The search query"}
+                "query": {"type": "string", "description": "Simple keyword search query, no operators"}
             },
             "required": ["query"]
         }
@@ -1560,21 +1566,20 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     if first_iteration:
                         original_trigger = current_trigger
 
-            # On retry, if last_msg (from history) is not addressed to the bot
-            # but the original trigger was, keep the original trigger.
-            if not first_iteration and original_trigger is not None:
-                last_addr_bot = (
-                    bot.user in last_msg.mentions
-                    or BOT_NAME.lower() in (last_msg.content or "").lower()
-                )
-                orig_addr_bot = (
-                    bot.user in original_trigger.mentions
-                    or BOT_NAME.lower() in (original_trigger.content or "").lower()
-                )
-                if not last_addr_bot and orig_addr_bot:
-                    log.info(f"Channel #{channel_id}: last_msg ({last_msg.author.display_name}) not addressed to bot — falling back to original trigger")
-                    last_msg = original_trigger
-
+                # On retry, if last_msg (from history) is not addressed to the bot
+                # but the original trigger was, keep the original trigger.
+                if not first_iteration and original_trigger is not None:
+                    last_addr_bot = (
+                        bot.user in last_msg.mentions
+                        or BOT_NAME.lower() in (last_msg.content or "").lower()
+                    )
+                    orig_addr_bot = (
+                        bot.user in original_trigger.mentions
+                        or BOT_NAME.lower() in (original_trigger.content or "").lower()
+                    )
+                    if not last_addr_bot and orig_addr_bot:
+                        log.info(f"Channel #{channel_id}: last_msg ({last_msg.author.display_name}) not addressed to bot — falling back to original trigger")
+                        last_msg = original_trigger
             else:
                 if not last_msg:
                     log.info(f"Channel #{channel_id}: no messages in history — skipping")
