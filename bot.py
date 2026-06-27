@@ -555,6 +555,8 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
     return text
 
+# ── DeepSeek web search is enabled via extra_body below ──────────────────────
+
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
     # Let the model know web search is available (enable_search is enabled below).
     system = "Du hast Zugriff auf Echtzeit-Websuche. Nutze sie, wenn du aktuelle Informationen brauchst.\n\n" + system
