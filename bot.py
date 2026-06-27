@@ -559,6 +559,7 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=max_tokens,
+        extra_body={"enable_search": True},
     )
     text = (response.choices[0].message.content or "").strip()
     if not text:
