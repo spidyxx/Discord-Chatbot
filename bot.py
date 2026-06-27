@@ -534,7 +534,8 @@ def _to_text_messages(messages: list, annotate_images: bool = False) -> list:
         else:
             continue
         if annotate_images and image_count:
-            text = f"{text}\n[image: {image_count} attached]" if text else f"[image: {image_count} attached]"
+            note = f"[HINWEIS: {image_count} Bild(er) angehängt — du kannst Bilder NICHT sehen, nur Text. Sag ehrlich, dass du das Bild nicht sehen kannst.]"
+            text = f"{text}\n{note}" if text else note
         if not text:
             continue
         if msg["role"] == "assistant":
