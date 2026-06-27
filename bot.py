@@ -590,6 +590,16 @@ async def _ddg_search(query: str) -> str:
         body = r.get("body", "")
         href = r.get("href", "")
         lines.append(f"- {title}\n  {body}\n  {href}")
+
+    # If we got results, try to fetch the top result's page content for richer context
+    if results and results[0].get("href"):
+        try:
+            text = await fetch_webpage_text(results[0]["href"])
+            if text:
+                lines.insert(0, f"[Page content from {results[0]['href']}]:\n{text[:3000]}")
+        except Exception:
+            pass
+
     return "\n".join(lines) if lines else ""
 
 
