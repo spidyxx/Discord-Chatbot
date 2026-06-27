@@ -600,12 +600,16 @@ async def _ddg_search(query: str) -> str:
             desc = snippet.get_text(" ", strip=True) if snippet else ""
             results.append(f"- {title}\n  {desc}\n  {url}")
     if not results:
-        # Fallback: try extracting any links with snippets
-        for r in soup.select("a[href^='http']")[:5]:
-            parent = r.find_parent("td") or r.find_parent("div")
-            text = parent.get_text(" ", strip=True)[:300] if parent else ""
-            if r.get_text(strip=True) and "duckduckgo" not in r.get("href", "").lower():
-                results.append(f"- {r.get_text(strip=True)}\n  {text}\n  {r['href']}")
+        # Fallback: extract any external links from the page
+        for a in soup.select("a[href^='http']")[:5]:
+            href = a.get("href", "")
+            if "duckduckgo" in href.lower():
+                continue
+            title = a.get_text(strip=True)
+            parent_text = (a.find_parent(["td","div","tr"]) or a).get_text(" ", strip=True)[:200]
+            results.append(f"- {title}\n  {parent_text}\n  {href}")
+    if not results:
+        log.info(f"DDG no results for '{query[:60]}' — HTML preview: {html[:300]!r}")
     return "\n".join(results) if results else ""
 
 
