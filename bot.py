@@ -574,30 +574,39 @@ _DEEPSEEK_TOOLS = [{
 
 
 async def _ddg_search(query: str) -> str:
-    """Search DuckDuckGo via JSON API (no scraping, no API key)."""
+    """Search DuckDuckGo via lite.duckduckgo.com (simple HTML, no JS)."""
+    import bs4
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                "https://api.duckduckgo.com/",
-                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
-                headers={"User-Agent": "Mozilla/5.0"},
+            async with session.post(
+                "https://lite.duckduckgo.com/lite/",
+                data={"q": query},
+                headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36", "Content-Type": "application/x-www-form-urlencoded"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                data = await resp.json(content_type=None)
+                html = await resp.text()
     except Exception as e:
         log.warning(f"DDG search failed for '{query[:60]}': {e}")
         return ""
 
+    soup = bs4.BeautifulSoup(html, "html.parser")
     results = []
-    # Instant answer
-    if data.get("AbstractText"):
-        results.append(f"Answer: {data['AbstractText']}\n  Source: {data.get('AbstractURL', '')}")
-    if data.get("Answer"):
-        results.append(f"Answer: {data['Answer']}")
-    # Related topics
-    for topic in data.get("RelatedTopics", [])[:5]:
-        if isinstance(topic, dict) and topic.get("Text"):
-            results.append(f"- {topic['Text']}\n  {topic.get('FirstURL', '')}")
+    # Lite DDG: each result is a <tr> with a link, followed by a <tr> with snippet
+    rows = soup.select("table tr")
+    i = 0
+    while i < len(rows) and len(results) < 5:
+        link = rows[i].select_one("a.result-link")
+        if link:
+            title = link.get_text(strip=True)
+            url = link.get("href", "")
+            snippet = ""
+            if i + 1 < len(rows):
+                snip_cell = rows[i + 1].select_one("td.result-snippet")
+                if snip_cell:
+                    snippet = snip_cell.get_text(" ", strip=True)
+            results.append(f"- {title}\n  {snippet}\n  {url}")
+            i += 1  # skip snippet row
+        i += 1
     return "\n".join(results) if results else ""
 
 
