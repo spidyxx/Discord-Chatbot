@@ -617,6 +617,25 @@ async def _ddg_search(query: str) -> str:
         except Exception:
             pass
 
+    if not lines:
+        # DDGS returned nothing — try wttr.in as last-resort weather fallback
+        low = query.lower()
+        if any(w in low for w in ("wetter", "temperatur", "grad", "regen", "vorhersage", "wochenende")):
+            import re as _re
+            import httpx as _httpx
+            # Extract city name: take the longest capitalized word(s) after stripping known prefixes
+            clean = _re.sub(r'(?i)wetter|temperatur|vorhersage|wochenende|morgen|heute|sonntag|montag|dienstag|mittwoch|donnerstag|freitag|samstag', ' ', query)
+            words = [w for w in clean.split() if w[0].isupper() and len(w) > 2]
+            if words:
+                city = words[0]
+                try:
+                    async with _httpx.AsyncClient(timeout=8) as client:
+                        r = await client.get(f"https://wttr.in/{city}?format=4")
+                        if r.status_code == 200:
+                            lines.append(f"wttr.in forecast for {city}: {r.text.strip()}")
+                except Exception:
+                    pass
+
     return "\n".join(lines) if lines else ""
 
 
