@@ -639,6 +639,8 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
             text = (msg.content or "").strip()
             if not text:
                 log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
+            # Strip any raw XML tool-call syntax the model may have hallucinated into the text
+            text = _strip_raw_tool_calls(text)
             return text
 
         # Execute tool calls
@@ -674,7 +676,19 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
     )
-    return (response.choices[0].message.content or "").strip()
+    return _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
+
+def _strip_raw_tool_calls(text: str) -> str:
+    """Strip raw XML tool-call syntax hallucinated into text output by some models."""
+    import re as _re
+    # Remove entire <function_calls>...</function_calls> blocks (multiline)
+    text = _re.sub(r'<\s*/?\s*function_calls[^>]*>.*?<\s*/\s*function_calls\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
+    # Remove <invoke>...</invoke> blocks and <parameter>...</parameter> blocks
+    text = _re.sub(r'<\s*/?\s*invoke[^>]*>.*?<\s*/\s*invoke\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
+    text = _re.sub(r'<\s*/?\s*parameter[^>]*>.*?<\s*/\s*parameter\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
+    # Remove any remaining orphaned XML tags
+    text = _re.sub(r'<\s*/?\s*(?:function_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=_re.IGNORECASE)
+    return text.strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
