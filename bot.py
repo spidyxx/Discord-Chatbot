@@ -166,6 +166,24 @@ if GEMINI_API_KEY:
         api_key=GEMINI_API_KEY,
     )
 
+# ── DeepSeek ───────────────────────────────────────────────────────────────────
+# DeepSeek V4 models (deepseek-v4-pro, deepseek-v4-flash) accessed via
+# OpenAI-compatible endpoint at https://api.deepseek.com/v1.
+#
+# Capabilities vs Claude:
+#   ✅ Web search     — client-side via DuckDuckGo + wttr.in weather fallback
+#   ✅ Tool calling   — function-calling API (web_search tool loop, max 4 rounds)
+#   ✅ Text chat      — full personality, memory injection, German replies
+#   ❌ Vision/images  — NOT supported (API rejects image_url blocks; confirmed in
+#                       DeepSeek docs: Anthropic API compat table says type="image"
+#                       is "Not Supported"). Images → text annotation telling the
+#                       model it cannot see them.
+#   ❌ Prompt caching — not supported (cost impact only, not a capability gap)
+#
+# When to use DeepSeek tiers:
+#   - Text-only tasks: classification, memory filtering, emoji reactions
+#   - Web search: working via DDG + wttr.in (see _ddg_search, _DEEPSEEK_TOOLS)
+#   - NOT for main channels if images are expected (use Claude/Anthropic instead)
 _deepseek_client = None
 if DEEPSEEK_API_KEY:
     from openai import AsyncOpenAI as _AsyncOpenAI2
@@ -718,12 +736,16 @@ async def _ddg_search(query: str) -> str:
 
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+    """Call DeepSeek via OpenAI-compatible endpoint with function-calling web search.
+
+    DeepSeek V4 is text-only — no vision/multimodal support. Images are stripped
+    and replaced with [HINWEIS: ...] annotations via _to_text_messages().
+    See the DeepSeek block comment at the _deepseek_client init for full capability matrix.
+    """
     # DeepSeek reasoning models spend hidden reasoning tokens against the output
     # budget — same problem as Gemini. Multiply generously so reasoning leaves
     # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
-    # DeepSeek V4 models are text-only (no vision support). Use text with
-    # image annotations so the model honestly says it can't see them.
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
 
     for _ in range(4):  # max 4 tool-call rounds
