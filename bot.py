@@ -505,65 +505,46 @@ def _model_for_tier(tier: str) -> str:
     if tier == "expensive": return EXPENSIVE_MODEL
     return NORMAL_MODEL
 
-def _to_openai_messages(messages: list) -> list:
-    """Convert Anthropic-style messages to OpenAI chat format with image support.
+def _to_text_messages(messages: list, annotate_images: bool = False) -> list:
+    """Flatten Anthropic-style messages to text for non-vision models.
 
-    Anthropic image blocks become OpenAI image_url blocks. Text-only content
-    stays as plain strings. Merges consecutive same-role messages.
+    Strips image blocks and cache_control. Merges consecutive same-role
+    messages, which the OpenAI chat format does not allow.
+    Also strips raw tool-call XML from assistant messages.
+
+    If annotate_images is True, adds [image: N attached] markers so the
+    model knows images were present even though it can't see them.
     """
     result = []
     for msg in messages:
         content = msg["content"]
+        image_count = 0
         if isinstance(content, str):
             text = content
-            parts = [{"type": "text", "text": text}]
         elif isinstance(content, list):
-            parts = []
-            text_parts = []
+            texts = []
             for b in content:
                 if not isinstance(b, dict):
                     continue
                 if b.get("type") == "text":
-                    text_parts.append(b["text"])
+                    texts.append(b["text"])
                 elif b.get("type") == "image":
-                    src = b.get("source", {})
-                    mediatype = src.get("media_type", "image/png")
-                    data = src.get("data", "")
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mediatype};base64,{data}"}
-                    })
-            if text_parts:
-                parts.insert(0, {"type": "text", "text": " ".join(text_parts)})
-            else:
-                continue  # no text, no images → skip
+                    image_count += 1
+            text = " ".join(texts).strip()
         else:
             continue
-
-        # Strip hallucinated tool-call XML from assistant messages
+        if annotate_images and image_count:
+            text = f"{text}\n[image: {image_count} attached]" if text else f"[image: {image_count} attached]"
+        if not text:
+            continue
         if msg["role"] == "assistant":
-            for p in parts:
-                if p["type"] == "text":
-                    p["text"] = _strip_raw_tool_calls(p["text"])
-            parts = [p for p in parts if p["type"] != "text" or p["text"].strip()]
-
-        if not parts:
-            continue
-
-        # If only one text part, use string content; otherwise use array
-        if len(parts) == 1 and parts[0]["type"] == "text":
-            new_content = parts[0]["text"]
-        else:
-            new_content = parts
-
+            text = _strip_raw_tool_calls(text)
+            if not text:
+                continue
         if result and result[-1]["role"] == msg["role"]:
-            prev = result[-1]["content"]
-            if isinstance(prev, str) and isinstance(new_content, str):
-                result[-1]["content"] = prev + "\n" + new_content
-            else:
-                result.append({"role": msg["role"], "content": new_content})
+            result[-1]["content"] += "\n" + text
         else:
-            result.append({"role": msg["role"], "content": new_content})
+            result.append({"role": msg["role"], "content": text})
     return result
 
 async def _local_call(system: str, messages: list, max_tokens: int) -> str:
@@ -677,7 +658,9 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     # budget — same problem as Gemini. Multiply generously so reasoning leaves
     # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
-    openai_messages = [{"role": "system", "content": system}] + _to_openai_messages(messages)
+    # DeepSeek's API only supports text content — use _to_text_messages with
+    # image annotations so the model knows images were present.
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
 
     for _ in range(4):  # max 4 tool-call rounds
         response = await _deepseek_client.chat.completions.create(
