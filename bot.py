@@ -561,22 +561,11 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     # tokens against the output budget — same problem as Gemini. Multiply generously
     # so reasoning leaves enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
-    log.info(f"DeepSeek call: model={model} max_tokens_in={max_tokens} max_tokens_out={expanded}")
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
-        tools=[{"type": "web_search", "web_search": {"enable": True}}],
+        extra_body={"enable_search": True},
     )
-    msg = response.choices[0].message
-    # If the model returned tool calls (search queries), the content may be None;
-    # extract any search results from the tool calls.
-    text = (msg.content or "").strip()
-    if not text and msg.tool_calls:
-        # DeepSeek may return search results as tool call arguments — extract what we can.
-        parts = []
-        for tc in msg.tool_calls:
-            if hasattr(tc, "function") and hasattr(tc.function, "arguments"):
-                parts.append(str(tc.function.arguments))
-        text = "\n".join(parts).strip()
+    text = (response.choices[0].message.content or "").strip()
     if not text:
         finish = getattr(response.choices[0], "finish_reason", "?")
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
