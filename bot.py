@@ -679,15 +679,18 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     return _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
 
 def _strip_raw_tool_calls(text: str) -> str:
-    """Strip raw XML tool-call syntax hallucinated into text output by some models."""
+    """Strip raw XML/DSML tool-call syntax hallucinated into text output by some models."""
     import re as _re
+    # Strip DSML markup: the model wraps tags in ｜DSML｜ (fullwidth vertical bars + DSML)
+    # Discord renders these as <function_calls>, <invoke>, etc.
+    text = _re.sub(r'[\uff5c\u2016]{1,2}\s*DSML\s*[\uff5c\u2016]{1,2}', '', text)
     # Remove entire <function_calls>...</function_calls> blocks (multiline)
     text = _re.sub(r'<\s*/?\s*function_calls[^>]*>.*?<\s*/\s*function_calls\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
     # Remove <invoke>...</invoke> blocks and <parameter>...</parameter> blocks
     text = _re.sub(r'<\s*/?\s*invoke[^>]*>.*?<\s*/\s*invoke\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
     text = _re.sub(r'<\s*/?\s*parameter[^>]*>.*?<\s*/\s*parameter\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
-    # Remove any remaining orphaned XML tags
-    text = _re.sub(r'<\s*/?\s*(?:function_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=_re.IGNORECASE)
+    # Remove any remaining orphaned XML tags (including DSML-stripped ones like <tool_calls>)
+    text = _re.sub(r'<\s*/?\s*(?:function_calls|tool_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=_re.IGNORECASE)
     return text.strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
