@@ -580,6 +580,17 @@ async def _ddg_search(query: str) -> str:
         results = await asyncio.to_thread(
             lambda: list(DDGS().text(query, max_results=5))
         )
+        # If no results, retry with a broader query (strip quotes and date specifics)
+        if not results:
+            broader = query.replace('"', '').strip()
+            import re as _re
+            broader = _re.sub(r'\d{1,2}[\.\s]+(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jän|Feb|Mär|Apr|Jun|Jul|Aug|Sep|Okt|Nov|Dez)\s*\d{4}', '', broader)
+            broader = _re.sub(r'\d{1,2}\.\d{1,2}\.\d{4}', '', broader)
+            broader = " ".join(broader.split())
+            if broader != query.replace('"', '').strip():
+                results = await asyncio.to_thread(
+                    lambda: list(DDGS().text(broader, max_results=5))
+                )
     except Exception as e:
         log.warning(f"DDG search failed for '{query[:60]}': {e}")
         return ""
@@ -591,7 +602,7 @@ async def _ddg_search(query: str) -> str:
         href = r.get("href", "")
         lines.append(f"- {title}\n  {body}\n  {href}")
 
-    # If we got results, try to fetch the top result's page content for richer context
+    # Fetch top result's page content for richer context
     if results and results[0].get("href"):
         try:
             text = await fetch_webpage_text(results[0]["href"])
