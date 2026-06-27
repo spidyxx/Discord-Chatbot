@@ -555,30 +555,111 @@ async def _gemini_call(system: str, messages: list, max_tokens: int, model: str)
         log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
     return text
 
-# ── DeepSeek web search is enabled via extra_body below ──────────────────────
+# ── Client-side web search for DeepSeek (DuckDuckGo HTML, no API key) ─────────
+
+_DDG_SEARCH_URL = "https://html.duckduckgo.com/html/"
+_DDGA_SEARCH_URL = "https://lite.duckduckgo.com/lite/"
+
+_DEEPSEEK_TOOLS = [{
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": "Search the web for current, real-time information. Use for weather, news, facts you're unsure about.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query"}
+            },
+            "required": ["query"]
+        }
+    }
+}]
+
+
+async def _ddg_search(query: str) -> str:
+    """Search DuckDuckGo and return formatted results (titles + snippets + URLs)."""
+    import bs4
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                _DDGA_SEARCH_URL,
+                params={"q": query},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                html = await resp.text()
+    except Exception as e:
+        log.warning(f"DDG search failed for '{query[:60]}': {e}")
+        return ""
+
+    soup = bs4.BeautifulSoup(html, "html.parser")
+    results = []
+    for row in soup.select("table.result")[:5]:
+        link = row.select_one("a.result-link")
+        snippet = row.select_one("td.result-snippet")
+        if link:
+            title = link.get_text(strip=True)
+            url = link.get("href", "")
+            desc = snippet.get_text(strip=True) if snippet else ""
+            results.append(f"- {title}\n  {desc}\n  {url}")
+    return "\n".join(results) if results else ""
+
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
-    # Let the model know web search is available (web_search is enabled below).
-    system = "Du hast Zugriff auf Echtzeit-Websuche. Nutze sie, wenn du aktuelle Informationen brauchst.\n\n" + system
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
     # DeepSeek reasoning models spend hidden reasoning tokens against the output
     # budget — same problem as Gemini. Multiply generously so reasoning leaves
     # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+
+    for _ in range(4):  # max 4 tool-call rounds
+        response = await _deepseek_client.chat.completions.create(
+            model=model, messages=openai_messages, max_tokens=expanded,
+            tools=_DEEPSEEK_TOOLS, tool_choice="auto",
+        )
+        msg = response.choices[0].message
+        finish = getattr(response.choices[0], "finish_reason", "")
+
+        if not msg.tool_calls:
+            text = (msg.content or "").strip()
+            if not text:
+                log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
+            return text
+
+        # Execute tool calls
+        openai_messages.append({
+            "role": "assistant",
+            "content": msg.content or "",
+            "tool_calls": [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
+                }
+                for tc in msg.tool_calls
+            ]
+        })
+        for tc in msg.tool_calls:
+            if tc.function.name == "web_search":
+                import json as _json
+                try:
+                    args = _json.loads(tc.function.arguments)
+                except Exception:
+                    args = {}
+                query = args.get("query", "")
+                log.info(f"DeepSeek web_search: '{query[:80]}'")
+                result = await _ddg_search(query)
+                openai_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": result or "(no results)",
+                })
+
+    # Max rounds reached — one final call without tools
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
-        extra_body={"web_search": True},
     )
-    msg = response.choices[0].message
-    text = (msg.content or "").strip()
-    # Log whether search results came back in the response
-    extra_fields = {k: v for k, v in response.model_dump().items() if k not in ("choices", "id", "model", "object", "created", "usage")}
-    if extra_fields:
-        log.info(f"DeepSeek extra response fields: {extra_fields}")
-    if not text:
-        finish = getattr(response.choices[0], "finish_reason", "?")
-        log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
-    return text
+    return (response.choices[0].message.content or "").strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
