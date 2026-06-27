@@ -574,42 +574,30 @@ _DEEPSEEK_TOOLS = [{
 
 
 async def _ddg_search(query: str) -> str:
-    """Search DuckDuckGo and return formatted results (titles + snippets + URLs)."""
-    import bs4
+    """Search DuckDuckGo via JSON API (no scraping, no API key)."""
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://html.duckduckgo.com/html/",
-                data={"q": query},
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; rv:120.0) Gecko/20100101 Firefox/120.0"},
+            async with session.get(
+                "https://api.duckduckgo.com/",
+                params={"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"},
+                headers={"User-Agent": "Mozilla/5.0"},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
-                html = await resp.text()
+                data = await resp.json()
     except Exception as e:
         log.warning(f"DDG search failed for '{query[:60]}': {e}")
         return ""
 
-    soup = bs4.BeautifulSoup(html, "html.parser")
     results = []
-    for r in soup.select(".result")[:5]:
-        link = r.select_one(".result__a") or r.select_one("a.result__a")
-        snippet = r.select_one(".result__snippet")
-        if link:
-            title = link.get_text(strip=True)
-            url = link.get("href", "")
-            desc = snippet.get_text(" ", strip=True) if snippet else ""
-            results.append(f"- {title}\n  {desc}\n  {url}")
-    if not results:
-        # Fallback: extract any external links from the page
-        for a in soup.select("a[href^='http']")[:5]:
-            href = a.get("href", "")
-            if "duckduckgo" in href.lower():
-                continue
-            title = a.get_text(strip=True)
-            parent_text = (a.find_parent(["td","div","tr"]) or a).get_text(" ", strip=True)[:200]
-            results.append(f"- {title}\n  {parent_text}\n  {href}")
-    if not results:
-        log.info(f"DDG no results for '{query[:60]}' — HTML preview: {html[:300]!r}")
+    # Instant answer
+    if data.get("AbstractText"):
+        results.append(f"Answer: {data['AbstractText']}\n  Source: {data.get('AbstractURL', '')}")
+    if data.get("Answer"):
+        results.append(f"Answer: {data['Answer']}")
+    # Related topics
+    for topic in data.get("RelatedTopics", [])[:5]:
+        if isinstance(topic, dict) and topic.get("Text"):
+            results.append(f"- {topic['Text']}\n  {topic.get('FirstURL', '')}")
     return "\n".join(results) if results else ""
 
 
