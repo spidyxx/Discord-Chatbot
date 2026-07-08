@@ -24,6 +24,7 @@ from discord.ext import commands, tasks
 from anthropic import Anthropic
 from plugins.registry import registry as plugin_registry, discover as _discover_plugins
 from plugins.core.help import build_help_text as _build_help_text
+from plugins.core.help import capabilities_block as _capabilities_block
 from plugins.core.snapshot import _parse_snapshot_facts
 from plugins import state as bot_state
 from version import BOT_VERSION
@@ -110,9 +111,12 @@ TZ          = ZoneInfo(TIMEZONE)
 DIGEST_ENABLED = os.environ.get("DIGEST_ENABLED", "true").lower() == "true"
 DIGEST_HOUR    = int(os.environ.get("DIGEST_HOUR",   "23"))
 DIGEST_MINUTE  = int(os.environ.get("DIGEST_MINUTE", "0"))
+DIGEST_MAX_FACTS = int(os.environ.get("DIGEST_MAX_FACTS", "6"))  # hard cap on memories per nightly digest
 
 # Flavor memory cooldown — suppress flavor entries used within this window
 FLAVOR_COOLDOWN_HOURS = int(os.environ.get("FLAVOR_COOLDOWN_HOURS", "6"))
+# Max flavor memories injected per message (least-recently-used first)
+FLAVOR_MAX_PER_MESSAGE = int(os.environ.get("FLAVOR_MAX_PER_MESSAGE", "5"))
 
 # Proactive conversation starter
 PROACTIVE_ENABLED         = os.environ.get("PROACTIVE_ENABLED", "true").lower() == "true"
@@ -231,14 +235,41 @@ def _write(path: Path, data: list):
 def load_memories() -> list: return _read(MEMORY_FILE)
 def save_memories(m: list):  _write(MEMORY_FILE, m)
 
+def _content_words(text: str) -> set[str]:
+    return {w for w in re.findall(r"\w+", text.lower()) if len(w) > 2 and w not in _STOPWORDS}
+
+
+def _is_duplicate_memory(fact: str, subject: str | None, memories: list) -> dict | None:
+    """Return the existing memory this fact duplicates (Jaccard word overlap
+    against same-subject entries), or None."""
+    words = _content_words(fact)
+    if not words:
+        return None
+    for m in memories:
+        if (m.get("subject") or None) != (subject or None):
+            continue
+        other = _content_words(m.get("content", ""))
+        if not other:
+            continue
+        jaccard = len(words & other) / len(words | other)
+        if jaccard >= 0.6:
+            return m
+    return None
+
+
 def add_memory(fact: str, added_by: str, user_id: int,
                memory_type: str = "general",
                subject: str = None,
                aliases: list[str] = None,
                trigger: str = None,
                flavor: bool = False,
-               expires: str = None):
+               expires: str = None) -> int:
+    """Store a memory. Returns 1 if saved, 0 if skipped as a near-duplicate."""
     m = load_memories()
+    dup = _is_duplicate_memory(fact, subject, m)
+    if dup:
+        log.info(f"Memory skipped (duplicate of {dup['id']}): {fact[:80]}")
+        return 0
     entry = {
         "id":       str(uuid.uuid4())[:8],
         "type":     memory_type,
@@ -259,6 +290,7 @@ def add_memory(fact: str, added_by: str, user_id: int,
     m.append(entry)
     save_memories(m)
     log.info(f"Memory [{memory_type}] saved by {added_by}: {fact[:80]}")
+    return 1
 
 def cleanup_expired_memories() -> int:
     memories = load_memories()
@@ -486,6 +518,16 @@ async def build_memory_block(message_context: str, full_context: str = "",
                     identity_facts.append(m)
         else:
             general_candidates.append(m)
+
+    # Cap flavor injection per message; least-recently-used first so the
+    # selection rotates instead of dumping a user's whole flavor list at once.
+    if len(flavor_candidates) > FLAVOR_MAX_PER_MESSAGE:
+        def _last_used_key(m: dict):
+            try:
+                return datetime.strptime(m.get("last_used"), "%d.%m.%Y %H:%M")
+            except (TypeError, ValueError):
+                return datetime.min
+        flavor_candidates = sorted(flavor_candidates, key=_last_used_key)[:FLAVOR_MAX_PER_MESSAGE]
 
     haiku_candidates = trigger_candidates + general_candidates
     haiku_ids = await _haiku_memory_filter(message_context, current_speaker, haiku_candidates)
@@ -835,10 +877,11 @@ def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -
     base = _base_prompt(channel_id)
     _now = datetime.now(TZ)
     _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
+    # Capabilities block is static per process → cache-safe.
     # Date only (no HH:MM): keeps the cached system prompt stable across the day.
     # Current time is still visible to the model via [HH:MM] prefixes on user
     # messages built in fetch_context() and ask_claude().
-    base = base + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}."
+    base = base + "\n\n" + _capabilities_block() + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}."
     if memory_block:
         return memory_block + "\n\n" + base
     if _is_main(channel_id):
@@ -1537,11 +1580,21 @@ async def daily_digest():
                 f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
                 "Regeln:\n"
                 "- Eine Zeile = eine Aussage. Nur gesicherte Fakten, keine Interpretation.\n"
-                "- BOT: Titel, Rollen, Besitztümer, Verhaltensregeln, Dynamiken mit Usern.\n"
+                "- BOT: nur dauerhafte Lore und Persönlichkeit (Titel, Rollen, Besitztümer, Running Gags, "
+                "Verhaltensregeln, Dynamiken mit Usern).\n"
                 "- USER: Nur für neue Nutzer oder neu entdeckte Aliase. Max. einen USER-Eintrag pro Nutzer.\n"
-                "- FLAVOR: Persönlichkeit, Beziehungen, Vorlieben, Erlebnisse mit Wiederholungspotenzial.\n"
-                "- NICHT speichern: Smalltalk, Einzelereignisse ohne Relevanz für spätere Gespräche, "
-                "Fakten die in einer Woche sicher nicht mehr zutreffen.\n"
+                "- FLAVOR: Persönlichkeit, Beziehungen, dauerhafte Vorlieben, Running Gags — Dinge, die auch "
+                "in einem Monat noch ein Gespräch bereichern würden.\n"
+                "- GENERAL: NUR server-eigene Begriffe und Running Gags (z.B. geflügelte Worte des Servers). "
+                "KEIN Weltwissen, keine News, keine Studien, keine Produkt- oder Sachinfos — das weiß der Bot selbst.\n"
+                "- NIEMALS speichern: technischer Zustand des Bots oder anderer Bots (Bugs, Versionsnummern, "
+                "Modell-Backend, Features die gerade kaputt/neu sind), Smalltalk, bloße Gesprächs-Nacherzählungen "
+                "(„X und Y haben über Z diskutiert“), Einzelereignisse ohne Wiederholungspotenzial, "
+                "aktuelle Zustände/Pläne/Projekte-Status („arbeitet gerade an“, „hat diese Woche“).\n"
+                "- Im Zweifel: NICHT speichern oder ein Ablaufdatum setzen. Dauerhaft (NONE) ist die Ausnahme, "
+                "nicht die Regel.\n"
+                "- Maximal 6 Zeilen pro Tag. Lieber 2 gute als 6 mittelmäßige. Ein Tag ohne speichernswerte "
+                "Fakten ist normal — dann gib nichts aus.\n"
                 "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
                 + _known_identities_block()
             ),
@@ -1549,8 +1602,12 @@ async def daily_digest():
             2000,
         )
         parsed = _parse_snapshot_facts(fact_text)
+        if len(parsed) > DIGEST_MAX_FACTS:
+            log.info(f"Digest #{channel_id}: {len(parsed)} facts extracted, capping at {DIGEST_MAX_FACTS}")
+            parsed = parsed[:DIGEST_MAX_FACTS]
+        saved = 0
         for fact_data in parsed:
-            add_memory(
+            saved += add_memory(
                 fact        = fact_data["content"],
                 added_by    = label,
                 user_id     = bot.user.id,
@@ -1561,7 +1618,8 @@ async def daily_digest():
                 flavor      = fact_data.get("flavor", False),
                 expires     = fact_data.get("expires"),
             )
-        log.info(f"Digest #{channel_id}: {len(parsed)} facts saved to memory")
+        log.info(f"Digest #{channel_id}: {saved}/{len(parsed)} facts saved to memory")
+        cleanup_expired_memories()
 
 
 async def _try_proactive(channel_id: int):

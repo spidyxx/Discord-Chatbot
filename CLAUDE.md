@@ -60,7 +60,7 @@ Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`)
 Discord presence/status strings rotate from `statuses.txt` at the repo root (one per line, `#` for comments). `bot.py` loads it at startup via `_load_statuses()`. `deploy.sh` first-seeds the file then preserves server-side edits via `--ignore-existing`, identical to the plugin `.cfg` handling — so per-deployment customisation (e.g. a Snoop bot with stoner statuses) survives subsequent deploys.
 
 ### System prompt
-`build_system_prompt()` assembles: always-on bot facts + base prompt + current date (German weekday, `DD.MM.YYYY`, using `TIMEZONE`). Everything in it is stable across a day so the cached prefix survives between calls. Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. **Per-message memories are not in the system prompt either**: `ask_claude()` appends the `build_memory_block()` selection as a text block on the *final user message*, after both cache breakpoints, because the selection changes per message and would otherwise invalidate the whole cache.
+`build_system_prompt()` assembles: always-on bot facts + base prompt + capabilities block + current date (German weekday, `DD.MM.YYYY`, using `TIMEZONE`). Everything in it is stable across a day so the cached prefix survives between calls. Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. **Per-message memories are not in the system prompt either**: `ask_claude()` appends the `build_memory_block()` selection as a text block on the *final user message*, after both cache breakpoints, because the selection changes per message and would otherwise invalidate the whole cache.
 
 ### Chat reply post-processing
 `_clean_chat_reply()` collapses multiple blank lines (`\n\n+` → `\n`) before all conversational `channel.send` / `message.reply` calls. Plugin replies (summaries etc.) bypass this and are sent as-is.
@@ -170,6 +170,7 @@ Valid `model_tier` values: `local` | `cheap` | `normal` | `expensive`. If no `.c
 
 ### Rules for plugins
 
+- **Update `plugins/core/help.py` when adding user-facing features** — both `build_help_text()` (the /help reply) and `capabilities_block()` (injected into every system prompt so the bot knows what it can and cannot do). A feature missing there means the bot will deny having it.
 - **No bot.py imports** — would cause a circular import
 - **All Discord access via `ctx.message`** — `ctx.message.reply()`, `ctx.message.reference`, `ctx.message.author.display_name`, etc.
 - **File I/O**: use `_read(path)` / `_write(path, data)` from `plugins.base`; resolve paths from `os.environ.get("DATA_DIR", "/app/data")`

@@ -27,8 +27,8 @@ def build_help_text() -> str:
     return f"""**Was ich kann:**
 
 💬 **Allgemein** *(alle Kanäle)*
-Ich beantworte Fragen, suche im Web und erkenne Bilder – immer auf @Mention.
-In Hauptkanälen mische ich mich von selbst ein und nutze gespeichertes Hintergrundwissen.
+Ich beantworte Fragen, suche im Web, erkenne Bilder und lese verlinkte Artikel automatisch – immer auf @Mention.
+In Hauptkanälen mische ich mich von selbst ein, nutze gespeichertes Hintergrundwissen und poste abends einen Tagesrückblick, wenn was los war.
 
 ⏰ **Erinnerungen** *(alle Kanäle)*
 `@{n} erinnere mich in 2 Stunden an Meeting` – einmalige Benachrichtigung
@@ -76,6 +76,32 @@ Proaktiv: `{_model('PROACTIVE_TIER', 'expensive')}`
 Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}` / `{_model('DIGEST_FACTS_TIER', 'normal')}`
 
 `v{BOT_VERSION}`"""
+
+
+def capabilities_block() -> str:
+    """Model-facing summary of the bot's abilities and limits, injected into the
+    system prompt so the bot can answer "kannst du X?" correctly instead of
+    guessing. Keep in sync with build_help_text() when features change."""
+    n = _BOT_NAME
+    return f"""Deine Funktionen (Befehle funktionieren per @{n}-Mention):
+- Erinnerungen: einmalig ("erinnere mich in 2 Stunden an ...") und wiederkehrend ("... jeden Freitag um 20 Uhr"); anzeigen ("zeig meine Erinnerungen") und löschen ("lösche Erinnerung [ID]")
+- Zusammenfassungen: Chatverlauf ("fass zusammen"), YouTube-Videos (nur mit Untertiteln — du liest das Transkript, kein echtes Video-Verständnis) und ARD-Sounds-Podcast-Episoden (per Link)
+- Songtexte: "zeig mir den Songtext zu <Künstler> - <Titel>" oder per genius.com-Link
+- Witze: auf Zuruf; täglicher Witz an/aus/Uhrzeit (nur Admins/Mods)
+- Stummschalten: "shut up" o.ä.; jede weitere Mention weckt dich wieder
+- CDU-Counter: "CDU" (Stand), "CDU reset <Grund>", "CDU Protokoll"
+- Gedächtnis: du merkst dir Fakten über Nutzer und den Server; Admins/Mods können Einträge ansehen ("was weißt du alles?"), löschen ("vergiss dass ...") und den Tag als Fakten speichern ("speichere was heute passiert ist")
+- Webseiten: verlinkte Artikel liest du automatisch; du kannst auch im Web suchen
+- Bilder: kannst du sehen und beschreiben — bei unscharfen/kleinen Bildern nichts dazuerfinden
+- "/help" bzw. "was kannst du?" zeigt Nutzern die vollständige Befehlsliste
+
+Deine Grenzen (nicht behaupten, dass du es kannst):
+- Dateianhänge außer Bildern (PDF, Word, Audio ...) siehst du NICHT
+- Weitergeleitete Discord-Nachrichten kannst du nicht lesen
+- YouTube-Videos ohne Untertitel kannst du nicht zusammenfassen
+- Keine Sprachkanäle, keine DMs, kein Erstellen von Bildern
+
+Wenn jemand nach einer Funktion fragt, die es nicht gibt: sag das ehrlich und nenne ggf. die nächstliegende vorhandene Funktion."""
 
 
 class HelpPlugin(Plugin):

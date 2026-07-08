@@ -117,8 +117,9 @@ class SnapshotPlugin(Plugin):
                 await ctx.message.reply("Konnte keine strukturierten Fakten extrahieren. Versuch's nochmal.")
                 return
 
+            saved = 0
             for fact_data in parsed:
-                ctx.add_memory_fn(
+                saved += ctx.add_memory_fn(
                     fact        = fact_data["content"],
                     added_by    = ctx.message.author.display_name,
                     user_id     = ctx.message.author.id,
@@ -128,10 +129,10 @@ class SnapshotPlugin(Plugin):
                     trigger     = fact_data.get("trigger"),
                     flavor      = fact_data.get("flavor", False),
                     expires     = fact_data.get("expires"),
-                )
-            _log.info(f"SNAPSHOT: {len(parsed)} facts saved")
+                ) or 0
+            _log.info(f"SNAPSHOT: {saved}/{len(parsed)} facts saved")
 
-        await ctx.message.reply(f"Gespeichert. {len(parsed)} Einträge angelegt.")
+        await ctx.message.reply(f"Gespeichert. {saved} Einträge angelegt.")
 
 
 def setup(registry) -> None:
