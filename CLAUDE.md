@@ -60,13 +60,18 @@ Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`)
 Discord presence/status strings rotate from `statuses.txt` at the repo root (one per line, `#` for comments). `bot.py` loads it at startup via `_load_statuses()`. `deploy.sh` first-seeds the file then preserves server-side edits via `--ignore-existing`, identical to the plugin `.cfg` handling — so per-deployment customisation (e.g. a Snoop bot with stoner statuses) survives subsequent deploys.
 
 ### System prompt
-`build_system_prompt()` assembles: memory block + base prompt + current date (German weekday, `DD.MM.YYYY`, injected fresh on every call using `TIMEZONE`). Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. This keeps the cached system prompt stable across the day so prompt-cache hits aren't invalidated every minute.
+`build_system_prompt()` assembles: always-on bot facts + base prompt + current date (German weekday, `DD.MM.YYYY`, using `TIMEZONE`). Everything in it is stable across a day so the cached prefix survives between calls. Time-of-day is **not** in the system prompt — it's added per-message via `[HH:MM]` prefixes in `fetch_context()` and `ask_claude()`. **Per-message memories are not in the system prompt either**: `ask_claude()` appends the `build_memory_block()` selection as a text block on the *final user message*, after both cache breakpoints, because the selection changes per message and would otherwise invalidate the whole cache.
 
 ### Chat reply post-processing
 `_clean_chat_reply()` collapses multiple blank lines (`\n\n+` → `\n`) before all conversational `channel.send` / `message.reply` calls. Plugin replies (summaries etc.) bypass this and are sent as-is.
 
 ### Prompt caching
-`_claude_loop` applies `cache_control: ephemeral` to the system prompt and the last history message. **Do not modify `_claude_loop` without understanding the caching implications** — cache misses increase cost significantly.
+`_claude_loop` applies `cache_control: ephemeral` to the system prompt and the last history message, and logs `Cache [model]: write/read/uncached` per call at INFO. The cache is a strict prefix match, so everything ahead of those breakpoints must stay byte-identical between calls. Three mechanisms in `fetch_context()` enforce that:
+- **Anchored window** (`_ctx_anchor`): the history window starts at a fixed message id and grows, instead of sliding by one each message; when it reaches `CONTEXT_WINDOW` it re-anchors to the newest half (one deliberate cache miss).
+- **Frozen truncation boundary** (`_ctx_trunc_before`): which old user messages render truncated is decided at re-anchor time, not relative to the newest message.
+- **Tail-only reactions**: reaction counts are rendered only on messages newer than the truncation boundary, since counts change over time.
+
+**Do not modify `_claude_loop`, `fetch_context`, or `build_system_prompt` without understanding these invariants** — anything that rewrites history bytes or the system prompt per call silently turns every request into a full-price cache write.
 
 ### Intent classification
 `classify_intent()` uses the `cheap` tier to classify each @mention into an intent label (REMINDER, SUMMARY, etc.). The classifier prompt is built dynamically: a static preamble + plugin-contributed lines + a static footer. Plugins register their own intent labels and prompt lines — see plugin conventions below.

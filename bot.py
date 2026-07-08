@@ -56,7 +56,7 @@ SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT",
 COOLDOWN_SECONDS    = int(os.environ.get("COOLDOWN_SECONDS", "120"))
 CONTEXT_WINDOW      = int(os.environ.get("CONTEXT_WINDOW", "50"))
 RECENT_WINDOW       = int(os.environ.get("RECENT_WINDOW", "8"))   # last N messages kept at full length; older ones truncated hard
-MAX_CONTEXT_IMAGES  = int(os.environ.get("MAX_CONTEXT_IMAGES", "8"))  # cap on images embedded into history context (most recent kept)
+MAX_CONTEXT_IMAGES  = int(os.environ.get("MAX_CONTEXT_IMAGES", "4"))  # cap on images embedded into history context (most recent kept)
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
 
 # ── Model slots ───────────────────────────────────────────────────────────────
@@ -422,8 +422,13 @@ async def _haiku_memory_filter(message_context: str, speaker: str,
 
 async def build_memory_block(message_context: str, full_context: str = "",
                               current_speaker: str = "",
-                              track_usage: bool = False) -> str:
-    """Full async memory selection with type-aware injection and Haiku evaluation."""
+                              track_usage: bool = False,
+                              include_always_on: bool = True) -> str:
+    """Full async memory selection with type-aware injection and Haiku evaluation.
+
+    include_always_on=False omits the trigger-less bot facts — used when the
+    caller injects this block into the user message while the system prompt
+    already carries _always_on_memory_block()."""
     memories = load_memories()
     if not memories:
         return ""
@@ -487,7 +492,7 @@ async def build_memory_block(message_context: str, full_context: str = "",
 
     selected_triggers = [m for m in trigger_candidates if m.get("id") in haiku_ids]
     selected_general  = [m for m in general_candidates  if m.get("id") in haiku_ids]
-    bot_facts         = always_bot + selected_triggers
+    bot_facts         = (always_bot if include_always_on else []) + selected_triggers
 
     if track_usage:
         selected = bot_facts + identity_facts + flavor_candidates + selected_general
@@ -822,7 +827,11 @@ def _strip_raw_tool_calls(text: str) -> str:
     return text.strip()
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
-    """Sync. Pass memory_block from build_memory_block() for full async memory injection."""
+    """Sync. Stable across a day (base + always-on bot facts + date) so it caches.
+
+    Per-message memories are NOT passed here anymore — ask_claude() injects them
+    into the final user message to keep this prompt byte-identical between calls.
+    The memory_block param remains for callers that build one-off prompts."""
     base = _base_prompt(channel_id)
     _now = datetime.now(TZ)
     _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
@@ -1061,10 +1070,10 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
         system=cached_system, tools=TOOLS, messages=messages,
     )
     u = response.usage
-    log.debug(
-        f"Cache: write={u.cache_creation_input_tokens} "
+    log.info(
+        f"Cache [{model}]: write={u.cache_creation_input_tokens} "
         f"read={u.cache_read_input_tokens} "
-        f"uncached={u.input_tokens}"
+        f"uncached={u.input_tokens} out={u.output_tokens}"
     )
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
@@ -1101,6 +1110,16 @@ def _msg_ts(msg_time: datetime) -> str:
     return local.strftime("%d.%m %H:%M")
 
 
+# Cache-friendly context windows. The prompt cache is a strict prefix match, so
+# the rendered history must be append-only between calls: a fixed window start
+# (anchor) instead of a sliding "latest N", a truncation boundary frozen at
+# re-anchor time instead of one relative to the newest message, and reactions
+# only on the recent tail. Re-anchoring costs one deliberate full cache miss,
+# then the prefix is stable for the next ~CONTEXT_WINDOW/2 messages.
+_ctx_anchor:       dict[int, int] = {}  # channel_id → message id of window start
+_ctx_trunc_before: dict[int, int] = {}  # channel_id → ids below this render truncated
+
+
 async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     """Fetch recent channel messages as structured Claude conversation context."""
     channel = bot.get_channel(channel_id)
@@ -1115,6 +1134,20 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     async for msg in channel.history(**kwargs):
         raw.append(msg)
     chrono = list(reversed(raw))
+
+    # Anchored window: drop messages older than the channel anchor. Re-anchor to
+    # the newest half once the window has grown to the full fetch size.
+    anchor = _ctx_anchor.get(channel_id)
+    window = [m for m in chrono if anchor is not None and m.id >= anchor]
+    if not window or len(window) >= CONTEXT_WINDOW:
+        keep = max(CONTEXT_WINDOW // 2, RECENT_WINDOW)
+        window = chrono[-keep:]
+        if window:
+            _ctx_anchor[channel_id] = window[0].id
+            tail = max(len(window) - RECENT_WINDOW, 0)
+            _ctx_trunc_before[channel_id] = window[tail].id if tail else 0
+    chrono = window
+    trunc_before = _ctx_trunc_before.get(channel_id, 0)
 
     # Fetch images for every human message that may carry one — concurrently and
     # cached by message id — so the bot can see all images in its context window,
@@ -1144,23 +1177,29 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     msg_ids  = []   # parallel: discord message id per entry (None for assistant)
     for msg in chrono:
         ts = _msg_ts(msg.created_at)
+        # Reaction counts change over time and would rewrite old history bytes,
+        # so they are only rendered on the recent tail (volatile zone anyway).
+        rxn = _rxn_str(msg.reactions) if msg.id >= trunc_before else ""
         if msg.author == bot.user:
-            assistant_content = (msg.content or "") + _rxn_str(msg.reactions)
+            assistant_content = (msg.content or "") + rxn
             messages.append({"role": "assistant", "content": assistant_content.strip()})
             msg_ids.append(None)
         else:
             content = resolve_mentions(msg.content or "", msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
-            content += _rxn_str(msg.reactions)
+            content += rxn
             messages.append({"role": "user", "content": f"[{ts}] {msg.author.display_name}: {content}"})
             msg_ids.append(msg.id)
-    # Truncate older *user* messages to reduce their influence on the response.
-    # Assistant messages are never truncated — the bot must always see what it previously said.
-    cutoff = len(messages) - RECENT_WINDOW
+    # Truncate *user* messages older than the frozen boundary to reduce their
+    # influence on the response. Assistant messages are never truncated — the
+    # bot must always see what it previously said.
+    n_trunc = 0
     for i, m in enumerate(messages):
-        if i < cutoff and m["role"] == "user" and isinstance(m["content"], str) and len(m["content"]) > 80:
+        if (msg_ids[i] is not None and msg_ids[i] < trunc_before
+                and isinstance(m["content"], str) and len(m["content"]) > 80):
             messages[i] = {**m, "content": m["content"][:80] + "…"}
+            n_trunc += 1
 
     # Embed images into their messages, newest-first, up to MAX_CONTEXT_IMAGES total.
     budget = MAX_CONTEXT_IMAGES
@@ -1180,7 +1219,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
 
     n_user = sum(1 for m in messages if m["role"] == "user")
     n_asst = sum(1 for m in messages if m["role"] == "assistant")
-    log.info(f"fetch_context #{channel_id}: {len(messages)} msgs ({n_user} user, {n_asst} assistant, {n_img} images), cutoff={max(cutoff,0)}, recent={min(RECENT_WINDOW, len(messages))}")
+    log.info(f"fetch_context #{channel_id}: {len(messages)} msgs ({n_user} user, {n_asst} assistant, {n_img} images), truncated={n_trunc}, anchor={_ctx_anchor.get(channel_id)}")
     if messages:
         last = messages[-1]
         log.info(f"fetch_context #{channel_id}: last msg role={last['role']} content={str(last['content'])[:80]!r}")
@@ -1195,6 +1234,7 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
         full_context     = full_ctx,
         current_speaker  = username,
         track_usage      = _is_main(channel_id),
+        include_always_on = False,  # system prompt already carries the always-on bot facts
     ) if _is_main(channel_id) else ""
     # Cache the historical context prefix — everything before the last message is stable.
     if messages:
@@ -1211,9 +1251,16 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     content: list = [{"type": "text", "text": f"[{now_ts}] {username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
+    if mem_block:
+        # Per-message memories go into the FINAL user message, after both cache
+        # breakpoints (system prompt + last history message). Injecting them into
+        # the system prompt would change its first bytes on every call and
+        # invalidate the entire prompt cache.
+        content.append({"type": "text", "text":
+            f"[Erinnerungen aus deinem Gedächtnis, passend zu dieser Nachricht — nicht Teil der Nachricht selbst:\n{mem_block}]"})
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
-        build_system_prompt(channel_id, memory_block=mem_block),
+        build_system_prompt(channel_id),
         messages, tier=_tier(channel_id),
     )
     return reply
