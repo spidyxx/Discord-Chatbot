@@ -1336,6 +1336,35 @@ async def fetch_webpage_text(url: str) -> str | None:
         return None
 
 
+def _plain_webpage_urls(text: str) -> list[str]:
+    """Extract fetchable article URLs — YouTube, direct images and GIF-host
+    pages are handled elsewhere (youtube plugin / fetch_images)."""
+    return [
+        u for u in _URL_RE.findall(text or "")
+        if not _YT_URL_RE.search(u)
+        and not IMAGE_URL_RE.search(u)
+        and not _GIF_HOST_RE.match(u)
+    ][:MAX_URLS_PER_MSG]
+
+
+async def _build_url_context(msg) -> str:
+    """Fetch webpage text for URLs in a message (falling back to the
+    replied-to message) and return a prompt context block, or "".
+
+    Passive-channel counterpart of the URL fetching in RespondPlugin —
+    @mention-less messages never reach the plugin path, and the Anthropic
+    web_search tool cannot open a specific URL."""
+    urls = _plain_webpage_urls(msg.content)
+    if not urls and msg.reference and msg.reference.resolved:
+        urls = _plain_webpage_urls(getattr(msg.reference.resolved, "content", "") or "")
+    fetched = []
+    for u in urls:
+        text = await fetch_webpage_text(u)
+        if text:
+            fetched.append(f"[Inhalt von {u}]:\n{text}")
+    return "\n\n" + "\n\n".join(fetched) if fetched else ""
+
+
 _CLASSIFY_PREAMBLE = "Klassifiziere die Absicht. Antworte NUR im angegebenen Format:\n\n"
 
 _CLASSIFY_FOOTER = (
@@ -1777,19 +1806,23 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             elif question_bypass:
                 # Bot asked a question — treat any reply as a direct answer, skip SKIP-evaluation
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
+                url_context = await _build_url_context(last_msg)
                 reply = await ask_claude(
-                    last_msg.content, last_msg.author.display_name,
+                    last_msg.content + url_context, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
                     channel_id=channel_id, before_id=last_msg.id,
+                    memory_context=last_msg.content,
                 )
                 respond = bool(reply)
             elif BOT_NAME.lower() in last_msg.content.lower():
                 # Name mentioned without @mention — treat as direct address, skip evaluation
                 log.info(f"Channel #{channel_id}: bot name in message — skipping evaluation")
+                url_context = await _build_url_context(last_msg)
                 reply = await ask_claude(
-                    last_msg.content, last_msg.author.display_name,
+                    last_msg.content + url_context, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
                     channel_id=channel_id, before_id=last_msg.id,
+                    memory_context=last_msg.content,
                 )
                 respond = bool(reply)
             else:
@@ -1800,10 +1833,14 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 )
                 log.info(f"Channel #{channel_id}: should_respond → {'RESPOND' if respond else 'SKIP'}")
                 if respond:
+                    # Fetch only after the RESPOND decision — links in skipped
+                    # chatter shouldn't trigger web requests.
+                    url_context = await _build_url_context(last_msg)
                     reply = await ask_claude(
-                        last_msg.content, last_msg.author.display_name,
+                        last_msg.content + url_context, last_msg.author.display_name,
                         image_blocks=image_blocks or None,
                         channel_id=channel_id, before_id=last_msg.id,
+                        memory_context=last_msg.content,
                     )
                     respond = bool(reply)
             log.info(f"Channel #{channel_id}: evaluation → {'RESPOND: ' + (reply or '')[:80] if respond else 'SKIP'}")
