@@ -1269,8 +1269,10 @@ _FETCH_HEADERS_CONSENT = {**_FETCH_HEADERS_PLAIN, "Cookie": _CONSENT_COOKIE}
 async def fetch_webpage_text(url: str) -> str | None:
     """Fetch a web page and return its extracted main text, or None on failure.
 
-    Attempts the request twice: once without cookies, and if the content looks
-    like a consent wall (too short), again with IAB TCF v2 consent cookies.
+    Retries up to four times, alternating plain and IAB TCF v2 consent-cookie
+    headers: short/empty extractions mean either a CMP consent wall or a CDN
+    intermittently serving a skeleton page without the article body (observed
+    on tagesschau.de — same URL flips between ~5 KB shell and full page).
     Uses trafilatura for extraction — handles encoding and boilerplate removal.
     """
     if _YT_URL_RE.search(url) or IMAGE_URL_RE.search(url):
@@ -1288,16 +1290,24 @@ async def fetch_webpage_text(url: str) -> str | None:
     except Exception:
         return None
 
+    give_up = False  # deterministic failure — retrying won't help
+
     async def _fetch_raw(headers: dict) -> bytes | None:
+        nonlocal give_up
         async with session.get(
             url,
             timeout=aiohttp.ClientTimeout(total=10),
             max_redirects=5,
             headers=headers,
         ) as resp:
+            if resp.status != 200:
+                log.info(f"URL fetch: HTTP {resp.status}: {url}")
+                give_up = resp.status < 500
+                return None
             ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
             if "text/html" not in ct:
                 log.info(f"URL fetch skipped (not HTML, {ct}): {url}")
+                give_up = True
                 return None
             return await resp.content.read(MAX_FETCH_BYTES)
 
@@ -1314,18 +1324,26 @@ async def fetch_webpage_text(url: str) -> str | None:
             text = text[:MAX_WEBPAGE_CHARS] + " […]"
         return text
 
+    attempts = (_FETCH_HEADERS_PLAIN, _FETCH_HEADERS_CONSENT,
+                _FETCH_HEADERS_PLAIN, _FETCH_HEADERS_CONSENT)
     try:
-        async with aiohttp.ClientSession() as session:
-            raw = await _fetch_raw(_FETCH_HEADERS_PLAIN)
-            if raw is None:
+        text = None
+        for i, headers in enumerate(attempts):
+            if i:
+                await asyncio.sleep(2 ** (i - 1))  # 1s, 2s, 4s
+            # Fresh session (= fresh TCP connection) per attempt: a reused
+            # keep-alive connection can stay pinned to the same CDN backend
+            # that keeps serving the skeleton page.
+            async with aiohttp.ClientSession() as session:
+                raw = await _fetch_raw(headers)
+            if give_up:
                 return None
-            text = await asyncio.to_thread(_extract, raw)
-            # Short/empty result likely means a consent wall — retry with cookies
-            if not text or len(text) < 300:
-                log.info(f"URL fetch: content too short ({len(text or '')}\u00a0chars), retrying with consent cookies: {url}")
-                raw2 = await _fetch_raw(_FETCH_HEADERS_CONSENT)
-                if raw2:
-                    text = await asyncio.to_thread(_extract, raw2)
+            if raw is None:
+                continue
+            text = await asyncio.to_thread(_extract, raw) or text
+            if text and len(text) >= 300:
+                break
+            log.info(f"URL fetch attempt {i + 1}/{len(attempts)}: content too short ({len(text or '')}\u00a0chars): {url}")
         if text:
             log.info(f"URL fetch: {len(text)} chars extracted from {url}")
         else:
