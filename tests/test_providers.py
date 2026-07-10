@@ -11,7 +11,7 @@ class TestCapabilityRegistry:
 
     def test_gemini(self):
         caps = providers.caps_for_model("gemini-2.5-pro")
-        assert not caps.web_search and not caps.prompt_caching
+        assert caps.vision and not caps.web_search and not caps.prompt_caching
 
     def test_deepseek(self):
         caps = providers.caps_for_model("deepseek-v4-flash")

@@ -9,11 +9,11 @@ what the active model can do.
 Capability matrix:
                     vision  web_search  prompt_caching  documents
   Anthropic (claude)  ✅       ✅ (server tool)  ✅        ✅
-  Gemini              ❌*      ❌               ❌        ❌
+  Gemini              ✅       ❌               ❌        ❌
   DeepSeek            ❌       ✅ (DDG loop)     ❌        ❌
   Ollama (local)      ❌       ❌               ❌        ❌
-  * Gemini models are vision-capable; enabling image_url pass-through is
-    tracked separately — until then images are stripped and annotated.
+  Gemini receives images as OpenAI-style image_url data URIs
+  (to_openai_messages) through Google's OpenAI-compatible endpoint.
 
 DeepSeek V4 notes (deepseek-v4-pro / deepseek-v4-flash via OpenAI-compatible
 endpoint at api.deepseek.com/v1): text-only — the API rejects image_url
@@ -74,7 +74,7 @@ def caps_for_model(model: str) -> ModelCaps:
     if not model:
         return ModelCaps(vision=False, web_search=False, prompt_caching=False, documents=False)
     if model.startswith("gemini"):
-        return ModelCaps(vision=False, web_search=False, prompt_caching=False, documents=False)
+        return ModelCaps(vision=True, web_search=False, prompt_caching=False, documents=False)
     if model.startswith("deepseek"):
         return ModelCaps(vision=False, web_search=True, prompt_caching=False, documents=False)
     if model == LOCAL_MODEL and model:
@@ -231,7 +231,10 @@ async def local_call(system: str, messages: list, max_tokens: int) -> str:
 
 
 async def gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
-    openai_messages = [{"role": "system", "content": system}] + to_text_messages(messages, annotate_images=True)
+    # Gemini is vision-capable: pass images through as image_url data URIs
+    # instead of stripping them (Google's OpenAI-compatible endpoint accepts
+    # the standard OpenAI vision format).
+    openai_messages = [{"role": "system", "content": system}] + to_openai_messages(messages)
     response = await _gemini_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=_expand_budget(max_tokens),
     )
