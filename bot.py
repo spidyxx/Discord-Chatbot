@@ -881,24 +881,10 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
         log.warning(f"Empty reply from {model} after max rounds (raw was {len(response.choices[0].message.content or '')} chars)")
     return text or "(no response — tool loop exhausted all rounds)"
 
-def _strip_raw_tool_calls(text: str) -> str:
-    """Strip raw XML/DSML tool-call syntax hallucinated into text output by some models."""
-    import re as _re
-    before = len(text)
-    # Strip DSML markup: the model wraps tags in ｜DSML｜ (fullwidth vertical bars + DSML)
-    # Discord renders these as <function_calls>, <invoke>, etc.
-    text = _re.sub(r'[\uff5c\u2016]{1,2}\s*DSML\s*[\uff5c\u2016]{1,2}', '', text)
-    # Remove entire <function_calls>...</function_calls> blocks (multiline)
-    text = _re.sub(r'<\s*/?\s*function_calls[^>]*>.*?<\s*/\s*function_calls\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
-    # Remove <invoke>...</invoke> blocks and <parameter>...</parameter> blocks
-    text = _re.sub(r'<\s*/?\s*invoke[^>]*>.*?<\s*/\s*invoke\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
-    text = _re.sub(r'<\s*/?\s*parameter[^>]*>.*?<\s*/\s*parameter\s*>', '', text, flags=_re.DOTALL | _re.IGNORECASE)
-    # Remove any remaining orphaned XML tags (including DSML-stripped ones like <tool_calls>)
-    text = _re.sub(r'<\s*/?\s*(?:function_calls|tool_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=_re.IGNORECASE)
-    after = len(text.strip())
-    if before > after:
-        log.info(f"_strip_raw_tool_calls: {before} → {after} chars")
-    return text.strip()
+# Single source lives in plugins.base — also applied at send time via
+# clean_chat_reply, so leaked markup never reaches Discord (and thus never
+# re-enters the history context).
+from plugins.base import strip_raw_tool_calls as _strip_raw_tool_calls  # noqa: E402
 
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Stable across a day (base + always-on bot facts + date) so it caches.

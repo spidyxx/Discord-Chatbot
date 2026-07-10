@@ -53,9 +53,30 @@ def known_identities_block(memories: list) -> str:
     return "\n\nBereits bekannte Nutzeridentitäten (kein USER-Eintrag nötig, außer bei neuen Aliasen):\n" + "\n".join(lines)
 
 
+def strip_raw_tool_calls(text: str) -> str:
+    """Strip raw XML/DSML tool-call syntax hallucinated into text output by some
+    models (observed with DeepSeek). Applied at send time so the markup never
+    reaches Discord — and therefore never re-enters the history context."""
+    before = len(text)
+    # Strip DSML markup: the model wraps tags in ｜DSML｜ (fullwidth vertical bars + DSML)
+    # Discord renders these as <function_calls>, <invoke>, etc.
+    text = re.sub(r'[｜‖]{1,2}\s*DSML\s*[｜‖]{1,2}', '', text)
+    # Remove entire <function_calls>...</function_calls> blocks (multiline)
+    text = re.sub(r'<\s*/?\s*function_calls[^>]*>.*?<\s*/\s*function_calls\s*>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove <invoke>...</invoke> blocks and <parameter>...</parameter> blocks
+    text = re.sub(r'<\s*/?\s*invoke[^>]*>.*?<\s*/\s*invoke\s*>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<\s*/?\s*parameter[^>]*>.*?<\s*/\s*parameter\s*>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Remove any remaining orphaned XML tags (including DSML-stripped ones like <tool_calls>)
+    text = re.sub(r'<\s*/?\s*(?:function_calls|tool_calls|invoke|parameter|xml)\s*[^>]*/?>', '', text, flags=re.IGNORECASE)
+    after = len(text.strip())
+    if before > after:
+        _log.info(f"strip_raw_tool_calls: {before} → {after} chars")
+    return text.strip()
+
+
 def clean_chat_reply(text: str) -> str:
-    """Collapse multiple blank lines that Claude adds to conversational replies."""
-    return re.sub(r'\n{2,}', '\n', text).strip()
+    """Strip leaked tool-call markup, then collapse multiple blank lines."""
+    return re.sub(r'\n{2,}', '\n', strip_raw_tool_calls(text)).strip()
 
 
 def split_message(text: str, limit: int = 2000) -> list[str]:

@@ -48,6 +48,15 @@ class TestCleanChatReply:
         assert clean_chat_reply("a\nb") == "a\nb"
 
 
+class TestSendTimeStrip:
+    def test_clean_chat_reply_strips_leaked_tool_markup(self):
+        text = "Moment. ｜DSML｜<tool_calls>web_search</tool_calls>\n\n\nDas Wetter wird gut."
+        out = clean_chat_reply(text)
+        assert "DSML" not in out and "<tool_calls>" not in out
+        assert "Das Wetter wird gut." in out
+        assert "\n\n" not in out
+
+
 class TestKnownIdentities:
     def test_empty(self):
         assert known_identities_block([]) == ""
