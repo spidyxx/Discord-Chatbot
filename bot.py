@@ -930,6 +930,8 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
         f"read={u.cache_read_input_tokens} "
         f"uncached={u.input_tokens} out={u.output_tokens}"
     )
+    providers.record_usage(model, input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                           cache_read=u.cache_read_input_tokens, cache_write=u.cache_creation_input_tokens)
     return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
 
 async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
@@ -948,6 +950,8 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
         model=model, max_tokens=max_tokens,
         system=system, messages=messages,
     )
+    u = response.usage
+    providers.record_usage(model, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
     return response.content[0].text.strip()
 
 def resolve_mentions(content: str, mentions: list) -> str:
@@ -1399,6 +1403,10 @@ def _split_digest_reply(raw: str) -> tuple[str, list[dict]]:
 
 @tasks.loop(time=dt_time(hour=DIGEST_HOUR, minute=DIGEST_MINUTE, tzinfo=TZ))
 async def daily_digest():
+    summary_line = providers.usage_summary()
+    if summary_line:
+        log.info("Token usage today:\n" + summary_line)
+
     if not DIGEST_ENABLED:
         return
 

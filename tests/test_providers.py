@@ -96,6 +96,26 @@ class TestToOpenaiMessages:
         assert out[0]["content"] == "hier"
 
 
+class TestUsageAccounting:
+    def test_accumulates_per_model(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(providers, "_USAGE_FILE", tmp_path / "usage.json")
+        providers.record_usage("claude-sonnet-4-6", input_tokens=100, output_tokens=20,
+                               cache_read=1000, cache_write=0)
+        providers.record_usage("claude-sonnet-4-6", input_tokens=50, output_tokens=10)
+        providers.record_usage("claude-haiku-4-5-20251001", input_tokens=10, output_tokens=1)
+        summary = providers.usage_summary()
+        assert "claude-sonnet-4-6: 2 calls, in=150, out=30, cache_read=1000" in summary
+        assert "claude-haiku-4-5-20251001: 1 calls" in summary
+
+    def test_summary_empty_without_file(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(providers, "_USAGE_FILE", tmp_path / "missing.json")
+        assert providers.usage_summary() == ""
+
+    def test_record_never_raises(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(providers, "_USAGE_FILE", tmp_path)  # a directory → write fails
+        providers.record_usage("m", input_tokens=1)  # must not raise
+
+
 class TestWeatherCityExtraction:
     def test_capitalized_city(self):
         assert providers._extract_city("Wetter Hamburg Wochenende") == "Hamburg"

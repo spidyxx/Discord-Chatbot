@@ -23,10 +23,13 @@ function-calling loop (max 4 rounds). No prompt caching (cost impact only).
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote
 
 import aiohttp
@@ -57,6 +60,62 @@ def _expand_budget(max_tokens: int) -> int:
 # Set by bot.py after fetch_webpage_text is defined — used to enrich DDG
 # results with the top hit's page text without a circular import.
 webpage_fetcher = None
+
+# ── Usage accounting ──────────────────────────────────────────────────────────
+# Per-day, per-model token counters persisted to DATA_DIR/usage_stats.json —
+# the data basis for tier tuning. Every LLM call records here.
+
+_USAGE_FILE = Path(os.environ.get("DATA_DIR", "/app/data")) / "usage_stats.json"
+_USAGE_KEEP_DAYS = 90
+
+
+def record_usage(model: str, *, input_tokens: int = 0, output_tokens: int = 0,
+                 cache_read: int = 0, cache_write: int = 0) -> None:
+    try:
+        data = {}
+        if _USAGE_FILE.exists():
+            data = json.loads(_USAGE_FILE.read_text(encoding="utf-8"))
+        day = datetime.now().strftime("%Y-%m-%d")
+        entry = data.setdefault(day, {}).setdefault(model, {
+            "calls": 0, "in": 0, "out": 0, "cache_read": 0, "cache_write": 0,
+        })
+        entry["calls"]       += 1
+        entry["in"]          += int(input_tokens or 0)
+        entry["out"]         += int(output_tokens or 0)
+        entry["cache_read"]  += int(cache_read or 0)
+        entry["cache_write"] += int(cache_write or 0)
+        if len(data) > _USAGE_KEEP_DAYS:
+            for old_day in sorted(data)[:-_USAGE_KEEP_DAYS]:
+                del data[old_day]
+        _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _USAGE_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning(f"Usage accounting failed: {e}")
+
+
+def usage_summary(day: str | None = None) -> str:
+    """One line per model for the given day (default: today), or ''."""
+    try:
+        if not _USAGE_FILE.exists():
+            return ""
+        data = json.loads(_USAGE_FILE.read_text(encoding="utf-8"))
+        day = day or datetime.now().strftime("%Y-%m-%d")
+        models = data.get(day, {})
+        return "\n".join(
+            f"{m}: {v['calls']} calls, in={v['in']}, out={v['out']}, "
+            f"cache_read={v['cache_read']}, cache_write={v['cache_write']}"
+            for m, v in sorted(models.items())
+        )
+    except Exception:
+        return ""
+
+
+def _record_openai_usage(model: str, response) -> None:
+    u = getattr(response, "usage", None)
+    if u is not None:
+        record_usage(model,
+                     input_tokens=getattr(u, "prompt_tokens", 0),
+                     output_tokens=getattr(u, "completion_tokens", 0))
 
 # ── Capability registry ───────────────────────────────────────────────────────
 
@@ -233,6 +292,7 @@ async def local_call(system: str, messages: list, max_tokens: int) -> str:
     response = await _ollama_client.chat.completions.create(
         model=LOCAL_MODEL, messages=openai_messages, max_tokens=max_tokens,
     )
+    _record_openai_usage(LOCAL_MODEL, response)
     return (response.choices[0].message.content or "").strip()
 
 
@@ -247,6 +307,7 @@ async def gemini_call(system: str, messages: list, max_tokens: int, model: str) 
     response = await _gemini_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=_expand_budget(max_tokens),
     )
+    _record_openai_usage(model, response)
     text = (response.choices[0].message.content or "").strip()
     if not text:
         finish = getattr(response.choices[0], "finish_reason", "?")
@@ -386,6 +447,7 @@ async def deepseek_call(system: str, messages: list, max_tokens: int, model: str
         response = await _deepseek_client.chat.completions.create(
             model=model, messages=openai_messages, max_tokens=expanded,
         )
+        _record_openai_usage(model, response)
         text = strip_raw_tool_calls((response.choices[0].message.content or "").strip())
         if not text:
             log.warning(f"Empty reply from {model} (no-tools call, usage={response.usage})")
@@ -396,6 +458,7 @@ async def deepseek_call(system: str, messages: list, max_tokens: int, model: str
             model=model, messages=openai_messages, max_tokens=expanded,
             tools=_DEEPSEEK_TOOLS, tool_choice="auto",
         )
+        _record_openai_usage(model, response)
         msg = response.choices[0].message
         finish = getattr(response.choices[0], "finish_reason", "")
 
@@ -450,6 +513,7 @@ async def deepseek_call(system: str, messages: list, max_tokens: int, model: str
     response = await _deepseek_client.chat.completions.create(
         model=model, messages=openai_messages, max_tokens=expanded,
     )
+    _record_openai_usage(model, response)
     text = strip_raw_tool_calls((response.choices[0].message.content or "").strip())
     if not text:
         log.warning(f"Empty reply from {model} after max rounds (raw was {len(response.choices[0].message.content or '')} chars)")
