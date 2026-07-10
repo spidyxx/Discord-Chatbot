@@ -51,6 +51,24 @@ class TestUrlHelpers:
         assert len(bot._plain_webpage_urls(text)) == bot.MAX_URLS_PER_MSG
 
 
+def test_no_unanchored_oldest_first_history_calls():
+    """history(oldest_first=True) without after= paginates from the channel's
+    FIRST message ever — regression guard for the should_respond context bug."""
+    import re
+    from pathlib import Path
+
+    root = Path(bot.__file__).parent
+    sources = [root / "bot.py", *root.glob("plugins/**/*.py")]
+    offenders = []
+    for path in sources:
+        src = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"\.history\(([^)]*)\)", src, re.DOTALL):
+            args = m.group(1)
+            if "oldest_first=True" in args and "after" not in args:
+                offenders.append(f"{path.name}: history({args.strip()})")
+    assert not offenders, f"Unanchored oldest_first=True history calls: {offenders}"
+
+
 class TestResolveMentions:
     def test_replaces_both_syntaxes(self):
         class M:

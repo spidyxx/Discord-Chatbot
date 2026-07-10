@@ -1824,9 +1824,13 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             # during generation will set it to True and trigger a re-evaluation.
             _channel_pending[channel_id] = False
 
+            # Newest-first fetch, then reverse for chronological order.
+            # oldest_first=True without after= would fetch from the channel's
+            # very first message (see the same pitfall note in fetch_context).
+            raw = [msg async for msg in channel.history(limit=10)]
             all_msgs     = []
             recent_lines = []
-            async for msg in channel.history(limit=10, oldest_first=True):
+            for msg in reversed(raw):
                 name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
                 ts   = _msg_ts(msg.created_at)
                 recent_lines.append(f"[{ts}] {name}: {msg.content}")
