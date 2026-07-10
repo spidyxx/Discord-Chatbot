@@ -1273,7 +1273,6 @@ async def rotate_status():
     status_index += 1
 
 
-@tasks.loop(time=dt_time(hour=DIGEST_HOUR, minute=DIGEST_MINUTE, tzinfo=TZ))
 def _split_digest_reply(raw: str) -> tuple[str, list[dict]]:
     """Split the combined digest output into (summary, parsed facts).
     Expected shape: <summary or SKIP> ===FAKTEN=== <fact lines or KEINE>."""
@@ -1284,6 +1283,7 @@ def _split_digest_reply(raw: str) -> tuple[str, list[dict]]:
     return summary.strip(), _parse_snapshot_facts(facts_text)
 
 
+@tasks.loop(time=dt_time(hour=DIGEST_HOUR, minute=DIGEST_MINUTE, tzinfo=TZ))
 async def daily_digest():
     if not DIGEST_ENABLED:
         return
