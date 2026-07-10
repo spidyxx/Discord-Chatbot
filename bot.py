@@ -765,6 +765,45 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
 
     return blocks
 
+# ── Forwarded messages (discord.py >= 2.4 message_snapshots) ─────────────────
+
+def _forwarded_text(msg) -> str:
+    """Inline rendering of forwarded-message snapshots."""
+    parts = []
+    for snap in (getattr(msg, "message_snapshots", None) or []):
+        content = (snap.content or "").strip()
+        if content:
+            parts.append(f"[Weitergeleitete Nachricht: {content}]")
+        elif snap.attachments or snap.embeds:
+            parts.append("[Weitergeleitete Nachricht: nur Anhang/Embed]")
+    return " ".join(parts)
+
+
+def _display_text(msg) -> str:
+    """Message text including any forwarded snapshot content."""
+    text = msg.content or ""
+    fwd = _forwarded_text(msg)
+    return f"{text} {fwd}".strip() if fwd else text
+
+
+def _msg_media_sources(msg) -> tuple[list, list, str]:
+    """Attachments, embeds and text of a message, merged with its forwarded
+    snapshots — so images inside forwards are fetched like normal ones."""
+    attachments = list(msg.attachments)
+    embeds      = list(msg.embeds)
+    content     = msg.content or ""
+    for snap in (getattr(msg, "message_snapshots", None) or []):
+        attachments.extend(snap.attachments)
+        embeds.extend(snap.embeds)
+        if snap.content:
+            content += " " + snap.content
+    return attachments, embeds, content
+
+
+def _has_media(msg) -> bool:
+    return bool(msg.attachments or msg.embeds or getattr(msg, "message_snapshots", None))
+
+
 # Per-message image cache: message.id → list of image blocks. Message attachments
 # are immutable, so once fetched an image never needs re-downloading. Bounded LRU
 # so fetch_context can embed history images on every call without re-fetching.
@@ -777,7 +816,8 @@ async def _fetch_message_images(msg) -> list[dict]:
     if cached is not None:
         _IMAGE_CACHE.move_to_end(msg.id)
         return cached
-    blocks = await fetch_images(msg.attachments, list(msg.embeds), msg.content or "")
+    atts, embeds, content = _msg_media_sources(msg)
+    blocks = await fetch_images(atts, embeds, content)
     _IMAGE_CACHE[msg.id] = blocks
     _IMAGE_CACHE.move_to_end(msg.id)
     while len(_IMAGE_CACHE) > _IMAGE_CACHE_MAX:
@@ -897,7 +937,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     img_candidates = [
         m for m in chrono
         if m.author != bot.user
-        and (m.attachments or m.embeds or IMAGE_URL_RE.search(m.content or ""))
+        and (_has_media(m) or IMAGE_URL_RE.search(m.content or ""))
     ]
     img_results = await asyncio.gather(
         *(_fetch_message_images(m) for m in img_candidates),
@@ -927,7 +967,7 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
             messages.append({"role": "assistant", "content": assistant_content.strip()})
             msg_ids.append(None)
         else:
-            content = resolve_mentions(msg.content or "", msg.mentions)
+            content = resolve_mentions(_display_text(msg), msg.mentions)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             content += rxn
@@ -1300,7 +1340,7 @@ async def daily_digest():
         async for msg in channel.history(after=since, limit=500, oldest_first=True):
             if msg.author == bot.user:
                 continue
-            content = msg.content
+            content = _display_text(msg)
             if msg.attachments:
                 content += f" [+ {len(msg.attachments)} Anhang/Anhänge]"
             lines.append(f"{msg.author.display_name}: {content}")
@@ -1610,7 +1650,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             for msg in reversed(raw):
                 name = bot.user.display_name if msg.author == bot.user else msg.author.display_name
                 ts   = _msg_ts(msg.created_at)
-                recent_lines.append(f"[{ts}] {name}: {msg.content}")
+                recent_lines.append(f"[{ts}] {name}: {_display_text(msg)}")
                 all_msgs.append(msg)
             last_msg = all_msgs[-1] if all_msgs else None
 
@@ -1627,7 +1667,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     # Don't replace last_msg; just ensure the new message is in context
                     pending_name = current_trigger.author.display_name
                     pending_ts   = _msg_ts(current_trigger.created_at)
-                    pending_line  = f"[{pending_ts}] {pending_name}: {current_trigger.content or ''}"
+                    pending_line  = f"[{pending_ts}] {pending_name}: {_display_text(current_trigger)}"
                     if not recent_lines or recent_lines[-1] != pending_line:
                         recent_lines.append(pending_line)
                     # original_trigger stays as last_msg (set below or from history)
@@ -1637,7 +1677,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     last_msg      = current_trigger
                     trigger_name  = current_trigger.author.display_name
                     trigger_ts    = _msg_ts(current_trigger.created_at)
-                    trigger_line  = f"[{trigger_ts}] {trigger_name}: {current_trigger.content or ''}"
+                    trigger_line  = f"[{trigger_ts}] {trigger_name}: {_display_text(current_trigger)}"
                     # Append to context if history didn't include it yet
                     if not recent_lines or recent_lines[-1] != trigger_line:
                         recent_lines.append(trigger_line)
@@ -1679,14 +1719,14 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             # the follow-up arrived during generation), pull the image from that
             # prior message.
             img_source = last_msg
-            if not (last_msg.attachments or last_msg.embeds):
+            if not _has_media(last_msg):
                 for prev in reversed(all_msgs[:-1]):
                     if prev.author.id != last_msg.author.id:
                         continue
                     age = (last_msg.created_at - prev.created_at).total_seconds()
                     if age > 300:
                         break
-                    if prev.attachments or prev.embeds:
+                    if _has_media(prev):
                         img_source = prev
                         log.info(
                             f"Channel #{channel_id}: carrying over image from prior "
@@ -1695,7 +1735,8 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                         )
                         break
 
-            image_blocks = await fetch_images(img_source.attachments, list(img_source.embeds), img_source.content or "")
+            _atts, _embeds, _content = _msg_media_sources(img_source)
+            image_blocks = await fetch_images(_atts, _embeds, _content)
 
             # Hard skip: message @-mentions another user (and not the bot) and
             # doesn't reference the bot by name — clearly addressed elsewhere.
@@ -1712,10 +1753,10 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 log.info(f"Channel #{channel_id}: direct reply to bot question — skipping evaluation")
                 url_context = await _build_url_context(last_msg)
                 reply = await ask_claude(
-                    last_msg.content + url_context, last_msg.author.display_name,
+                    _display_text(last_msg) + url_context, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
                     channel_id=channel_id, before_id=last_msg.id,
-                    memory_context=last_msg.content,
+                    memory_context=_display_text(last_msg),
                 )
                 respond = bool(reply)
             elif BOT_NAME.lower() in last_msg.content.lower():
@@ -1723,16 +1764,16 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 log.info(f"Channel #{channel_id}: bot name in message — skipping evaluation")
                 url_context = await _build_url_context(last_msg)
                 reply = await ask_claude(
-                    last_msg.content + url_context, last_msg.author.display_name,
+                    _display_text(last_msg) + url_context, last_msg.author.display_name,
                     image_blocks=image_blocks or None,
                     channel_id=channel_id, before_id=last_msg.id,
-                    memory_context=last_msg.content,
+                    memory_context=_display_text(last_msg),
                 )
                 respond = bool(reply)
             else:
                 log.info(f"Channel #{channel_id}: evaluating via should_respond for '{last_msg.content[:60]}'")
                 respond = await should_respond(
-                    last_msg.content, last_msg.author.display_name, recent_context,
+                    _display_text(last_msg), last_msg.author.display_name, recent_context,
                     channel_id=channel_id, image_blocks=image_blocks or None,
                 )
                 log.info(f"Channel #{channel_id}: should_respond → {'RESPOND' if respond else 'SKIP'}")
@@ -1741,10 +1782,10 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                     # chatter shouldn't trigger web requests.
                     url_context = await _build_url_context(last_msg)
                     reply = await ask_claude(
-                        last_msg.content + url_context, last_msg.author.display_name,
+                        _display_text(last_msg) + url_context, last_msg.author.display_name,
                         image_blocks=image_blocks or None,
                         channel_id=channel_id, before_id=last_msg.id,
-                        memory_context=last_msg.content,
+                        memory_context=_display_text(last_msg),
                     )
                     respond = bool(reply)
             log.info(f"Channel #{channel_id}: evaluation → {'RESPOND: ' + (reply or '')[:80] if respond else 'SKIP'}")
@@ -1817,7 +1858,8 @@ async def on_message(message: discord.Message):
             except Exception:
                 pass
 
-        image_blocks = await fetch_images(message.attachments, message.embeds, message.content)
+        _atts, _embeds, _content = _msg_media_sources(message)
+        image_blocks = await fetch_images(_atts, _embeds, _content)
         if message.reference and message.reference.resolved:
             ref = message.reference.resolved
             ref_images = await fetch_images(ref.attachments, ref.embeds, ref.content or "")
@@ -1829,6 +1871,9 @@ async def on_message(message: discord.Message):
         clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
         # Resolve other @mentions to display names so Claude can match them to memory
         clean = resolve_mentions(clean, [m for m in message.mentions if m != bot.user]).strip()
+        fwd = _forwarded_text(message)
+        if fwd:
+            clean = f"{clean}\n{fwd}".strip()
         if not clean and has_images:
             clean = "Was siehst du auf diesem Bild?"
         elif not clean:

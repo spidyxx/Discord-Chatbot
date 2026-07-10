@@ -114,7 +114,6 @@ def capabilities_block(vision: bool = True, web_search: bool = True) -> str:
 
 Deine Grenzen (nicht behaupten, dass du es kannst):
 - Dateianhänge außer Bildern (PDF, Word, Audio ...) siehst du NICHT
-- Weitergeleitete Discord-Nachrichten kannst du nicht lesen
 - YouTube-Videos ohne Untertitel kannst du nicht zusammenfassen
 - Keine Sprachkanäle, keine DMs, kein Erstellen von Bildern
 {chr(10).join(limit_lines) if limit_lines else ""}

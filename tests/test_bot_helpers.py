@@ -148,6 +148,49 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class _Snap:
+    def __init__(self, content="", attachments=(), embeds=()):
+        self.content = content
+        self.attachments = list(attachments)
+        self.embeds = list(embeds)
+
+
+class _Msg:
+    def __init__(self, content="", snaps=(), attachments=(), embeds=()):
+        self.content = content
+        self.message_snapshots = list(snaps)
+        self.attachments = list(attachments)
+        self.embeds = list(embeds)
+
+
+class TestForwardedMessages:
+    def test_forwarded_text_rendered(self):
+        msg = _Msg(content="guck mal", snaps=[_Snap(content="Konzert am Freitag fällt aus")])
+        assert bot._forwarded_text(msg) == "[Weitergeleitete Nachricht: Konzert am Freitag fällt aus]"
+        assert bot._display_text(msg) == "guck mal [Weitergeleitete Nachricht: Konzert am Freitag fällt aus]"
+
+    def test_attachment_only_forward(self):
+        msg = _Msg(snaps=[_Snap(attachments=["a.png"])])
+        assert "nur Anhang/Embed" in bot._forwarded_text(msg)
+
+    def test_no_snapshots(self):
+        msg = _Msg(content="normal")
+        assert bot._forwarded_text(msg) == ""
+        assert bot._display_text(msg) == "normal"
+
+    def test_media_sources_merged(self):
+        msg = _Msg(content="hier", attachments=["x.jpg"],
+                   snaps=[_Snap(content="siehe Bild", attachments=["y.png"], embeds=["e"])])
+        atts, embeds, content = bot._msg_media_sources(msg)
+        assert atts == ["x.jpg", "y.png"]
+        assert embeds == ["e"]
+        assert "siehe Bild" in content
+
+    def test_has_media_via_snapshot(self):
+        assert bot._has_media(_Msg(snaps=[_Snap()]))
+        assert not bot._has_media(_Msg(content="nur text"))
+
+
 class TestSplitDigestReply:
     def test_summary_and_facts(self):
         raw = ("War heute einiges los, vor allem die Diskussion über Pizza.\n"
