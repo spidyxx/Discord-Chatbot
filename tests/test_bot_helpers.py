@@ -165,6 +165,38 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class TestDirectReply:
+    BOT = object()
+
+    class _Ref:
+        def __init__(self, resolved):
+            self.resolved = resolved
+
+    def _msg(self, ref_author=None):
+        m = _Msg(content="egal")
+        m.reference = self._Ref(SimpleNamespace(author=ref_author)) if ref_author is not None else None
+        return m
+
+    def test_reply_reference_to_bot(self):
+        assert bot._is_direct_reply(self._msg(ref_author=self.BOT), self.BOT, None, 1000.0, 300)
+
+    def test_reply_reference_to_other_user(self):
+        assert not bot._is_direct_reply(self._msg(ref_author="someone"), self.BOT, None, 1000.0, 300)
+
+    def test_first_message_after_bot_within_window(self):
+        assert bot._is_direct_reply(self._msg(), self.BOT, 940.0, 1000.0, 300)
+
+    def test_window_expired(self):
+        assert not bot._is_direct_reply(self._msg(), self.BOT, 600.0, 1000.0, 300)
+
+    def test_no_prior_bot_message(self):
+        assert not bot._is_direct_reply(self._msg(), self.BOT, None, 1000.0, 300)
+
+    def test_heuristic_disabled_reference_still_works(self):
+        assert not bot._is_direct_reply(self._msg(), self.BOT, 999.0, 1000.0, 0)
+        assert bot._is_direct_reply(self._msg(ref_author=self.BOT), self.BOT, None, 1000.0, 0)
+
+
 class TestDocKind:
     def test_pdf_by_content_type(self):
         assert bot._doc_kind("application/pdf", "handbuch.pdf") == "pdf"

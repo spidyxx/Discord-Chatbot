@@ -28,6 +28,7 @@ def build_help_text() -> str:
 
 💬 **Allgemein** *(alle Kanäle)*
 Ich beantworte Fragen, suche im Web, erkenne Bilder, lese PDFs/Textdateien als Anhang und verlinkte Artikel automatisch – immer auf @Mention.
+Wer direkt auf meine Nachricht antwortet (oder mir unmittelbar nach meiner Nachricht schreibt), braucht kein @.
 In Hauptkanälen mische ich mich von selbst ein, nutze gespeichertes Hintergrundwissen und poste abends einen Tagesrückblick, wenn was los war.
 
 ⏰ **Erinnerungen** *(alle Kanäle)*
@@ -108,7 +109,7 @@ def capabilities_block(vision: bool = True, web_search: bool = True,
     if not web_search:
         limit_lines.append("- Im Web suchen kannst du NICHT — sag das ehrlich, wenn aktuelle Infos gefragt sind")
 
-    return f"""Deine Funktionen (Befehle funktionieren per @{n}-Mention):
+    return f"""Deine Funktionen (Befehle funktionieren per @{n}-Mention; wer direkt auf deine Nachricht antwortet oder dir unmittelbar nach deiner Nachricht schreibt, erreicht dich auch ohne @):
 - Erinnerungen: einmalig ("erinnere mich in 2 Stunden an ...") und wiederkehrend ("... jeden Freitag um 20 Uhr"); anzeigen ("zeig meine Erinnerungen") und löschen ("lösche Erinnerung [ID]")
 - Zusammenfassungen: Chatverlauf ("fass zusammen"), YouTube-Videos (nur mit Untertiteln — du liest das Transkript, kein echtes Video-Verständnis) und ARD-Sounds-Podcast-Episoden (per Link)
 - Songtexte: "zeig mir den Songtext zu <Künstler> - <Titel>" oder per genius.com-Link

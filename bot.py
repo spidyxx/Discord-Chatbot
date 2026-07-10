@@ -127,6 +127,12 @@ PROACTIVE_SILENCE_MINUTES = int(os.environ.get("PROACTIVE_SILENCE_MINUTES", "45"
 PROACTIVE_COOLDOWN_HOURS  = int(os.environ.get("PROACTIVE_COOLDOWN_HOURS", "4"))
 PROACTIVE_CHECK_MINUTES   = int(os.environ.get("PROACTIVE_CHECK_MINUTES", "15"))
 
+# The FIRST message arriving within this window after the bot's own message is
+# treated as directly addressed to the bot (routed like a mention, incl.
+# intent classification). 0 disables the heuristic; Discord reply-references
+# to bot messages always count as direct.
+DIRECT_REPLY_WINDOW_S = int(os.environ.get("DIRECT_REPLY_WINDOW_S", "300"))
+
 
 DATA_DIR       = Path(os.environ.get("DATA_DIR", "/app/data"))
 MEMORY_FILE    = DATA_DIR / "memory.json"
@@ -1130,7 +1136,8 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     system = (
         build_system_prompt(channel_id) + "\n\n"
         "Du liest Nachrichten in einem Discord-Kanal. Antworte NUR wenn du echten Mehrwert liefern kannst. "
-        "Sonst antworte mit exakt: SKIP"
+        "Wenn die neueste Nachricht dich direkt anspricht oder dir eine Aufgabe stellt, antworte immer — "
+        "auch ohne @-Erwähnung. Sonst antworte mit exakt: SKIP"
     )
     text = f"Aktuelle Nachrichten:\n{recent_context}\n\nNeueste von {username}: {user_message}"
     if image_blocks:
@@ -1914,14 +1921,39 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             _channel_pending_msg.pop(channel_id, None)
 
 
+_last_bot_msg_ts: dict[int, float] = {}  # channel → ts of the bot's message while it is still the newest
+
+
+def _is_direct_reply(message, bot_user, prev_bot_ts: float | None,
+                     now_ts: float, window_s: int) -> bool:
+    """True if the message is directly addressed to the bot without a mention:
+    a Discord reply to one of the bot's messages, or the first message shortly
+    after the bot spoke ('who answered last' semantics)."""
+    ref = message.reference.resolved if message.reference else None
+    if getattr(ref, "author", None) == bot_user:
+        return True
+    return (window_s > 0 and prev_bot_ts is not None
+            and now_ts - prev_bot_ts <= window_s)
+
+
 @bot.event
 async def on_message(message: discord.Message):
+    cid = message.channel.id
     if message.author == bot.user:
+        # Remember that the bot posted the newest message in this channel —
+        # the next human message within DIRECT_REPLY_WINDOW_S is a follow-up.
+        _last_bot_msg_ts[cid] = message.created_at.timestamp()
         return
 
+    # Consume the marker: only the FIRST message after the bot's counts as a
+    # direct reply; anything later must address the bot explicitly again.
+    prev_bot_ts = _last_bot_msg_ts.pop(cid, None)
+
     is_mention = bot.user in message.mentions
-    is_main    = message.channel.id in MAIN_CHANNEL_IDS
-    log.info(f"on_message: #{message.channel.id} from {message.author} | mention={is_mention} main={is_main} muted={bot_state.muted}")
+    is_direct  = not is_mention and _is_direct_reply(
+        message, bot.user, prev_bot_ts, message.created_at.timestamp(), DIRECT_REPLY_WINDOW_S)
+    is_main    = cid in MAIN_CHANNEL_IDS
+    log.info(f"on_message: #{cid} from {message.author} | mention={is_mention} direct={is_direct} main={is_main} muted={bot_state.muted}")
 
     # Re-activate
     if bot_state.muted:
@@ -1932,7 +1964,7 @@ async def on_message(message: discord.Message):
         await message.channel.send("Bin wieder da.")
         # fall through — process the message normally so the wakeup message is also answered
 
-    if is_mention:
+    if is_mention or is_direct:
         # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
         if not message.attachments and re.search(r'https?://', message.content):
             await asyncio.sleep(1.5)
