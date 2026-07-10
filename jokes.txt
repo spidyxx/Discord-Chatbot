@@ -1,35 +1,146 @@
 # Witze für den täglichen Witz (joke-Plugin).
 # Ein Witz pro Zeile. Leerzeilen und Zeilen mit # werden ignoriert.
 # Mehrzeilige Witze sind nicht möglich – alles in eine Zeile.
-# Für ein ganzes Jahr werden ~365 Einträge gebraucht.
+# Kuratierte Sammlung: nur etablierte Witze, die auf Deutsch funktionieren.
+# Neue Witze ans ENDE anhängen – das hält die told-Indizes im joke_config stabil.
 
-Treffen sich zwei Magneten. Sagt der eine: „Was soll ich heute bloß anziehen?“
-Was macht ein Pirat am Computer? Er drückt die Enter-Taste.
-Wie nennt man einen Bumerang, der nicht zurückkommt? Stock.
-Was ist orange und geht über Berge? Eine Wanderine.
-Geht ein Cowboy zum Friseur. Kommt er raus – Pony weg.
-Was sagt ein Mathematiker, wenn er aufs Klo geht? „Ich muss mal kurz die Wurzel ziehen.“
-Warum können Geister so schlecht lügen? Weil man durch sie hindurchsieht.
-Was ist grün und steht vor der Tür? Ein Klopfsalat.
-Treffen sich zwei Kerzen. Sagt die eine: „Ist Wasser eigentlich gefährlich?“ Sagt die andere: „Ja, davon kannst du ausgehen.“
-Was macht ein Keks unter einem Baum? Krümel.
-Wie heißt ein Boomerang, der funktioniert? Boomerang. Der andere heißt Stock.
-Warum nehmen Bienen keinen Kredit auf? Weil sie schon ihren Stock haben.
-Was sitzt auf dem Baum und schreit „Aha“? Ein Uhu mit Sprachfehler.
-Treffen sich zwei Jäger. Beide tot.
-Was ist braun und schaut durchs Schlüsselloch? Ein Spannferkel.
-Warum hat der Pilz so viele Freunde? Weil er ein Schwammerl ist – und überall andockt.
-Was ist weiß und stört beim Frühstück? Eine Lawine.
-Wie nennt man einen Frosch ohne Beine? Egal, er kommt eh nicht.
-Was ist gelb und kann nicht schwimmen? Ein Bagger.
-Warum gehen Skelette nicht auf Partys? Weil sie niemanden zum Mitbringen haben – kein Herz, keine Begleitung.
-Was sagt ein 0 zu einer 8? „Schicker Gürtel!“
-Wie nennt man einen dicken Vegetarier? Biotonne.
+# ── Klassische Flachwitze ─────────────────────────────────────────────
+Was macht ein Keks unter einem Baum? Ein schattiges Plätzchen.
+Warum steht ein Pils im Wald? Weil die Tanne zapft.
+Wie nennt man einen Spanier ohne Auto? Carlos.
+Was ist braun und schwimmt im Wasser? Ein U-Brot.
+Was ist weiß und steht hinterm Baum? Eine schüchterne Milch.
+Was ist grün und klopft an die Tür? Ein Klopfsalat.
+Was ist gelb und flattert im Wind? Eine Fahnane.
+Was ist gelb und kann schießen? Eine Banone.
+Was ist rot und sitzt auf dem Klo? Eine Klomate.
+Was ist braun und sitzt hinter Gittern? Eine Knastanie.
+Was ist violett und sitzt in der Kirche? Eine Frommbeere.
+Was ist orange und wandert über die Berge? Eine Wanderine.
+Was ist bunt und rennt vom Tisch davon? Ein Fluchtsalat.
+Was liegt am Strand und redet undeutlich? Eine Nuschel.
+Was liegt am Strand und hat Schnupfen? Eine Niesmuschel.
+Was ist schwarz-weiß und hüpft von Eisscholle zu Eisscholle? Ein Springuin.
+Was hüpft durch den Wald und raucht? Ein Kaminchen.
+Was sitzt im Baum und winkt? Ein Huhu.
+Was sitzt auf dem Baum und ruft „Aha“? Ein Uhu mit Sprachfehler.
+Was ist grün und liegt im Sarg? Ein Sterbschen.
 Was ist rot und schlecht für die Zähne? Ein Ziegelstein.
-Treffen sich zwei Schnecken an einer Kreuzung. Kracht's.
-Warum trinken Mäuse keinen Alkohol? Aus Angst vor dem Kater.
-Was ist klein, braun und läuft durch den Wald? Ein Hermelin auf Speed.
-Wie nennt man eine Gruppe von Walen mit Instrumenten? Eine Orca-strer.
-Was macht eine Wolke mit Juckreiz? Sie kratzt sich am Donner.
-Warum war die Tomate rot? Weil sie den Salat gesehen hat… anziehen.
-Was ist der Unterschied zwischen einem Känguru und einem Kängurum? Das eine springt, das andere kängurt.
+Was ist braun, süß und rennt durch die Wüste? Ein Karamel.
+Was ist weiß und schaut durchs Schlüsselloch? Ein Spannbettlaken.
+Was ist braun und schaut durchs Schlüsselloch? Ein Spannferkel.
+Was ist klein, grün und dreieckig? Ein kleines grünes Dreieck.
+Was schwimmt im Meer und kann addieren? Ein Oktoplus.
+Wie nennt man ein helles Mammut? Hellmut.
+Wie nennt man einen Bären ohne Ohren? B.
+Wie nennt man einen Cowboy ohne Pferd? Sattelschlepper.
+Wie nennt man einen Bumerang, der nicht zurückkommt? Stock.
+Wie nennt man einen Fisch ohne Auge? Fsch.
+Wie nennt man einen Wurm in der Lederjacke? Eine Made in Germany.
+Wie nennt man eine schnelle Schildkröte? Ein Gerücht.
+Was macht ein Clown im Büro? Faxen.
+Was macht ein Pirat am Computer? Er drückt die Enter-Taste.
+Geht ein Cowboy zum Friseur. Kommt er raus – Pony weg.
+Was macht ein Mathematiker im Garten? Wurzeln ziehen.
+Wo wohnen Katzen? Im Miezhaus.
+Warum haben Fische keine Haare? Weil sie Schuppen haben.
+Was macht eine Bombe im Bordell? Puff.
+
+# ── Treffen sich zwei … ───────────────────────────────────────────────
+Treffen sich zwei Jäger. Beide tot.
+Treffen sich zwei Magneten. Sagt der eine: „Was soll ich heute bloß anziehen?“
+Treffen sich zwei Kühe auf der Weide. „Muh!“ – „Mist, das wollte ich gerade sagen!“
+Treffen sich zwei Luftballons in der Wüste. Sagt der eine: „Vorsicht, Kaktuuu…“
+Treffen sich zwei Schlangen. „Du, bin ich eigentlich giftig?“ – „Wieso?“ – „Ich hab mir gerade auf die Zunge gebissen.“
+Treffen sich zwei Atome. „Ich hab ein Elektron verloren!“ – „Bist du sicher?“ – „Ja, ich bin positiv.“
+Treffen sich zwei Kerzen. „Ist Wasser eigentlich gefährlich?“ – „Davon kannst du ausgehen.“
+Treffen sich zwei Besen im Schrank. Sagt der eine: „Wir kehren gleich wieder.“
+Treffen sich zwei Schnecken an der Kreuzung. Kracht’s.
+Gehen zwei Zahnstocher den Berg hoch. Überholt sie ein Igel. Sagt der eine: „Ich wusste gar nicht, dass hier ein Bus fährt.“
+Sitzen zwei Fliegen auf einem Kuhfladen. Rülpst die eine. Sagt die andere: „Ey bitte, ich esse hier!“
+Zwei Kekse liegen im Ofen. Sagt der eine: „Ganz schön heiß hier.“ Schreit der andere: „Aaah, ein sprechender Keks!“
+
+# ── Tiere ─────────────────────────────────────────────────────────────
+Warum summen Bienen? Weil sie den Text vergessen haben.
+Was sagt eine Schnecke, die auf einer Schildkröte reitet? „Huiiii!“
+Kommt ein Schwein an eine Steckdose: „Na, wer hat dich denn eingemauert?“
+Warum können Geister so schlecht lügen? Weil man sie so leicht durchschaut.
+Was sagt ein Krokodil, das einen Clown gefressen hat? „Irgendwie schmeckst du komisch.“
+Warum hat die Giraffe so einen langen Hals? Weil ihr Kopf so weit oben ist.
+Warum trinken Mäuse keinen Alkohol? Sie haben Angst vor dem Kater.
+Warum legen Hühner Eier? Würden sie sie werfen, gingen sie kaputt.
+Warum können Schweine nicht Fahrrad fahren? Kein Daumen zum Klingeln.
+Welches Tier springt höher als ein Haus? Jedes – Häuser können nicht springen.
+Was hat vier Beine und kann fliegen? Zwei Vögel.
+Wie kommt ein Elefant in den Kühlschrank? Tür auf, Elefant rein, Tür zu.
+Wie kommt eine Giraffe in den Kühlschrank? Tür auf, Elefant raus, Giraffe rein, Tür zu.
+Wie viele Elefanten passen in einen Smart? Vier – zwei vorne, zwei hinten.
+
+# ── Egal wie … ────────────────────────────────────────────────────────
+Egal wie dicht du bist, Goethe war Dichter.
+Egal wie leer du bist, es gibt Leute, die sind Lehrer.
+Egal wie gut du fährst, Züge fahren Güter.
+
+# ── Anti-Sprichwörter & Lebensweisheiten ──────────────────────────────
+Nachts ist es kälter als draußen.
+Lieber Arm dran als Arm ab.
+Wer zuletzt lacht, denkt am langsamsten.
+Wer anderen eine Grube gräbt, hat ein Grubengrabgerät.
+Der frühe Vogel kann mich mal.
+Unverhofft kommt oft, sagte der Igel und stieg von der Klobürste.
+Wer morgens zerknittert aufsteht, hat den ganzen Tag beste Entfaltungsmöglichkeiten.
+Ich bin nicht faul, ich bin im Energiesparmodus.
+Kleine Geschenke erhalten die Freundschaft, große die Staatsanwaltschaft.
+Wer Ordnung hält, ist nur zu faul zum Suchen.
+Ich liebe Arbeit – ich könnte stundenlang zusehen.
+Geld allein macht nicht glücklich. Es gehören auch Aktien, Gold und Immobilien dazu.
+Mein Horoskop meinte, ich solle heute niemandem glauben. Na gut – dann eben auch nicht dem Horoskop.
+Der Optimist sagt: Das Glas ist halb voll. Der Pessimist: halb leer. Der Ingenieur: Das Glas ist doppelt so groß wie nötig.
+
+# ── Grabstein-Klassiker ───────────────────────────────────────────────
+Was steht auf dem Grabstein eines Mathematikers? „Damit hat er nicht gerechnet.“
+Was steht auf dem Grabstein einer Putzfrau? „Sie kehrt nie wieder.“
+Was steht auf dem Grabstein eines Elektrikers? „Endlich spannungsfrei.“
+
+# ── Arzt, Ober & Alltag ───────────────────────────────────────────────
+„Herr Doktor, ich fühle mich wie ein Vorhang.“ – „Dann reißen Sie sich mal zusammen.“
+„Herr Doktor, alle ignorieren mich!“ – „Der Nächste, bitte!“
+„Herr Doktor, ich rede im Schlaf.“ – „Ist das schlimm?“ – „Ja, das ganze Büro lacht.“
+Kommt ein Skelett zum Arzt. Sagt der Arzt: „Sie hätten früher kommen sollen.“
+„Herr Ober, was macht die Fliege in meiner Suppe?“ – „Rückenschwimmen, würde ich sagen.“
+„Herr Ober, in meiner Suppe schwimmt ein Hörgerät!“ – „Wie bitte?“
+Chef: „Sie kommen schon wieder eine halbe Stunde zu spät!“ – „Keine Sorge, ich gehe auch eine halbe Stunde früher.“
+Geht eine Ente in die Apotheke: „Eine Lippenpomade bitte – und schreiben Sie’s mir auf den Schnabel.“
+Fritzchen fragt den Lehrer: „Kann man für etwas bestraft werden, das man nicht gemacht hat?“ – „Natürlich nicht.“ – „Gut. Ich habe nämlich die Hausaufgaben nicht gemacht.“
+Lehrer: „Fritzchen, nenn mir zwei Pronomen!“ – „Wer, ich?“ – „Genau richtig!“
+Lehrerin: „Was ist die Mehrzahl von Sand?“ – „Wüste.“
+Treffen sich zwei Beamte im Flur. Sagt der eine: „Na, kannst du auch nicht schlafen?“
+Warum spielen Beamte nicht Verstecken? Weil niemand nach ihnen sucht.
+„Papa, was ist ein Alkoholiker?“ – „Siehst du die vier Bäume da? Ein Alkoholiker sieht acht.“ – „Papa, da stehen nur zwei.“
+Woran erkennt man deutsche Urlauber um sechs Uhr morgens am Pool? Man sieht nur ihre Handtücher.
+
+# ── Nerd-Ecke ─────────────────────────────────────────────────────────
+Es gibt 10 Arten von Menschen: die, die Binärcode verstehen, und die, die es nicht tun.
+Warum verwechseln Programmierer Halloween und Weihnachten? Weil OCT 31 == DEC 25.
+Ich würde ja einen UDP-Witz erzählen, aber ich weiß nicht, ob er ankommt.
+Geht ein SQL-Statement in eine Bar, sieht zwei Tabellen und fragt: „Darf ich mich zu euch joinen?“
+Wie viele Programmierer braucht man, um eine Glühbirne zu wechseln? Keinen – das ist ein Hardware-Problem.
+Warum können Seeräuber keinen Kreisumfang berechnen? Weil sie Pi raten.
+Soll ich dir einen Witz über Natrium erzählen? Na?
+Ich kenne auch einen über Kalium. K.
+Witze über Chemie erzähle ich nur periodisch.
+Ich wollte einen Witz übers Ohmsche Gesetz machen, aber der Widerstand war zu groß.
+„Alexa, erzähl mir einen Witz.“ – „Dein Browserverlauf.“
+
+# ── Scherzfragen & Rätsel-Klassiker ───────────────────────────────────
+Was ist die gefährlichste Jahreszeit? Der Sommer: Die Sonne sticht, der Salat schießt, und der Rasen wird gesprengt.
+In welchem Monat schlafen die Menschen am wenigsten? Im Februar.
+Welcher Peter macht am meisten Krach? Der Trompeter.
+Welcher Vogel hat keinen Schnabel? Der Spaßvogel.
+Welche Brille kann man nicht aufsetzen? Die Klobrille.
+Womit hört der Tag auf und fängt die Nacht an? Mit dem Buchstaben T.
+Was hat ein Bett, schläft aber nie? Ein Fluss.
+Was hat Zähne, beißt aber nicht? Ein Kamm.
+Was sagt die Null zur Acht? „Schicker Gürtel!“
+Was sagt eine Banane zur anderen? „Lass uns abhängen.“
+Was ist der Unterschied zwischen einem Schneemann und einer Schneefrau? Schneebälle.
