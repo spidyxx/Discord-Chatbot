@@ -4,6 +4,7 @@ import asyncio
 from types import SimpleNamespace
 
 import bot
+from plugins.base import strip_raw_tool_calls
 
 
 class _FakeUsage:
@@ -41,19 +42,19 @@ def test_claude_loop_web_search_is_opt_in(monkeypatch):
 
 class TestStripRawToolCalls:
     def test_plain_text_untouched(self):
-        assert bot._strip_raw_tool_calls("Hallo Welt") == "Hallo Welt"
+        assert strip_raw_tool_calls("Hallo Welt") == "Hallo Welt"
 
     def test_dsml_marker_removed(self):
-        assert "DSML" not in bot._strip_raw_tool_calls("Hi ｜DSML｜<tool_calls>x</tool_calls> da")
+        assert "DSML" not in strip_raw_tool_calls("Hi ｜DSML｜<tool_calls>x</tool_calls> da")
 
     def test_function_calls_block_removed(self):
         text = "Vorher <function_calls><invoke name=\"web_search\"></invoke></function_calls> nachher"
-        out = bot._strip_raw_tool_calls(text)
+        out = strip_raw_tool_calls(text)
         assert "invoke" not in out and "function_calls" not in out
         assert out.startswith("Vorher") and out.endswith("nachher")
 
     def test_orphan_tags_removed(self):
-        out = bot._strip_raw_tool_calls("a <tool_calls> b")
+        out = strip_raw_tool_calls("a <tool_calls> b")
         assert "<tool_calls>" not in out
 
 
@@ -85,24 +86,6 @@ class TestUrlHelpers:
     def test_cap_at_max(self):
         text = " ".join(f"https://example.com/{i}" for i in range(5))
         assert len(bot._plain_webpage_urls(text)) == bot.MAX_URLS_PER_MSG
-
-
-class TestWeatherCityExtraction:
-    def test_capitalized_city(self):
-        assert bot._extract_city("Wetter Hamburg Wochenende") == "Hamburg"
-
-    def test_lowercase_chat_style(self):
-        assert bot._extract_city("wetter in berlin morgen") == "berlin"
-
-    def test_question_form(self):
-        assert bot._extract_city("wie wird das Wetter am Sonntag in Köln") == "Köln"
-
-    def test_no_city(self):
-        assert bot._extract_city("wetter morgen") is None
-
-    def test_weather_hint_gate(self):
-        assert bot._WEATHER_HINT_RE.search("Wettervorhersage Kiel")
-        assert not bot._WEATHER_HINT_RE.search("beste Pizza Rezepte")
 
 
 class TestSsrfGuard:

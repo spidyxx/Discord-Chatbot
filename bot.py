@@ -22,6 +22,7 @@ import discord
 from PIL import Image
 from discord.ext import commands, tasks
 from anthropic import Anthropic
+import providers
 from plugins.registry import registry as plugin_registry, discover as _discover_plugins
 from plugins.core.help import build_help_text as _build_help_text
 from plugins.core.help import capabilities_block as _capabilities_block
@@ -61,13 +62,12 @@ MAX_CONTEXT_IMAGES  = int(os.environ.get("MAX_CONTEXT_IMAGES", "4"))  # cap on i
 MAIN_SYSTEM_PROMPT  = os.environ.get("MAIN_SYSTEM_PROMPT") or SYSTEM_PROMPT
 
 # ── Model slots ───────────────────────────────────────────────────────────────
-OLLAMA_BASE_URL     = os.environ.get("OLLAMA_BASE_URL", "").rstrip("/")
-LOCAL_MODEL         = os.environ.get("LOCAL_MODEL", "")
+# Non-Anthropic backends (Ollama / Gemini / DeepSeek) live in providers.py,
+# including their env config and capability profiles.
 CHEAP_MODEL         = os.environ.get("CHEAP_MODEL", "claude-haiku-4-5-20251001")
 NORMAL_MODEL        = os.environ.get("NORMAL_MODEL", "claude-sonnet-4-6")
 EXPENSIVE_MODEL     = os.environ.get("EXPENSIVE_MODEL", "claude-sonnet-4-6")
-GEMINI_API_KEY      = os.environ.get("GEMINI_API_KEY", "")
-DEEPSEEK_API_KEY    = os.environ.get("DEEPSEEK_API_KEY", "")
+LOCAL_MODEL         = providers.LOCAL_MODEL
 
 # ── Tier assignments ──────────────────────────────────────────────────────────
 def _tier_env(name: str, default: str) -> str:
@@ -157,44 +157,6 @@ status_index                      = 0
 
 anthropic = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-_ollama_client = None
-if OLLAMA_BASE_URL and LOCAL_MODEL:
-    from openai import AsyncOpenAI
-    _ollama_client = AsyncOpenAI(base_url=f"{OLLAMA_BASE_URL}/v1", api_key="ollama")
-
-_gemini_client = None
-if GEMINI_API_KEY:
-    from openai import AsyncOpenAI as _AsyncOpenAI
-    _gemini_client = _AsyncOpenAI(
-        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        api_key=GEMINI_API_KEY,
-    )
-
-# ── DeepSeek ───────────────────────────────────────────────────────────────────
-# DeepSeek V4 models (deepseek-v4-pro, deepseek-v4-flash) accessed via
-# OpenAI-compatible endpoint at https://api.deepseek.com/v1.
-#
-# Capabilities vs Claude:
-#   ✅ Web search     — client-side via DuckDuckGo + wttr.in weather fallback
-#   ✅ Tool calling   — function-calling API (web_search tool loop, max 4 rounds)
-#   ✅ Text chat      — full personality, memory injection, German replies
-#   ❌ Vision/images  — NOT supported (API rejects image_url blocks; confirmed in
-#                       DeepSeek docs: Anthropic API compat table says type="image"
-#                       is "Not Supported"). Images → text annotation telling the
-#                       model it cannot see them.
-#   ❌ Prompt caching — not supported (cost impact only, not a capability gap)
-#
-# When to use DeepSeek tiers:
-#   - Text-only tasks: classification, memory filtering, emoji reactions
-#   - Web search: working via DDG + wttr.in (see _ddg_search, _DEEPSEEK_TOOLS)
-#   - NOT for main channels if images are expected (use Claude/Anthropic instead)
-_deepseek_client = None
-if DEEPSEEK_API_KEY:
-    from openai import AsyncOpenAI as _AsyncOpenAI2
-    _deepseek_client = _AsyncOpenAI2(
-        base_url="https://api.deepseek.com/v1",
-        api_key=DEEPSEEK_API_KEY,
-    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -579,345 +541,6 @@ def _model_for_tier(tier: str) -> str:
     if tier == "expensive": return EXPENSIVE_MODEL
     return NORMAL_MODEL
 
-def _to_openai_messages(messages: list) -> list:
-    """Convert Anthropic-style messages to OpenAI chat format with vision.
-
-    Anthropic image blocks in user messages become OpenAI image_url blocks.
-    Images in assistant messages are stripped (DeepSeek only accepts images
-    in user role). Merges consecutive same-role text messages.
-    Also strips raw tool-call XML from assistant messages.
-    """
-    result = []
-    for msg in messages:
-        content = msg["content"]
-        role = msg["role"]
-        if isinstance(content, str):
-            text = content
-            parts = [{"type": "text", "text": text}]
-        elif isinstance(content, list):
-            parts = []
-            text_parts = []
-            for b in content:
-                if not isinstance(b, dict):
-                    continue
-                if b.get("type") == "text":
-                    text_parts.append(b["text"])
-                elif b.get("type") == "image" and role == "user":
-                    # Only user messages can carry images for DeepSeek
-                    src = b.get("source", {})
-                    mediatype = src.get("media_type", "image/png")
-                    data = src.get("data", "")
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{mediatype};base64,{data}"}
-                    })
-            if text_parts:
-                parts.insert(0, {"type": "text", "text": " ".join(text_parts)})
-            if not parts:
-                continue
-        else:
-            continue
-
-        # Strip hallucinated tool-call XML from assistant messages
-        if role == "assistant":
-            for p in parts:
-                if p["type"] == "text":
-                    p["text"] = _strip_raw_tool_calls(p["text"])
-            parts = [p for p in parts if p["type"] != "text" or p["text"].strip()]
-        if not parts:
-            continue
-
-        # If only one text part, use string content; otherwise use array
-        if len(parts) == 1 and parts[0]["type"] == "text":
-            new_content = parts[0]["text"]
-        else:
-            new_content = parts
-
-        if result and result[-1]["role"] == role:
-            prev = result[-1]["content"]
-            if isinstance(prev, str) and isinstance(new_content, str):
-                result[-1]["content"] = prev + "\n" + new_content
-            else:
-                result.append({"role": role, "content": new_content})
-        else:
-            result.append({"role": role, "content": new_content})
-    return result
-
-def _to_text_messages(messages: list, annotate_images: bool = False) -> list:
-    """Flatten Anthropic-style messages to text for non-vision models.
-
-    Strips image blocks and cache_control. Merges consecutive same-role
-    messages. Also strips raw tool-call XML from assistant messages.
-
-    If annotate_images is True, adds [HINWEIS: N Bild(er) ...] markers so
-    text-only models know images exist but can honestly say they can't see them.
-    """
-    result = []
-    for msg in messages:
-        content = msg["content"]
-        image_count = 0
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            texts = []
-            for b in content:
-                if not isinstance(b, dict):
-                    continue
-                if b.get("type") == "text":
-                    texts.append(b["text"])
-                elif b.get("type") == "image":
-                    image_count += 1
-            text = " ".join(texts).strip()
-        else:
-            continue
-        if annotate_images and image_count:
-            note = f"[HINWEIS: {image_count} Bild(er) angehängt — du kannst Bilder NICHT sehen, nur Text. Sag ehrlich, dass du das Bild nicht sehen kannst.]"
-            text = f"{text}\n{note}" if text else note
-        if not text:
-            continue
-        if msg["role"] == "assistant":
-            text = _strip_raw_tool_calls(text)
-            if not text:
-                continue
-        if result and result[-1]["role"] == msg["role"]:
-            result[-1]["content"] += "\n" + text
-        else:
-            result.append({"role": msg["role"], "content": text})
-    return result
-
-async def _local_call(system: str, messages: list, max_tokens: int) -> str:
-    # annotate_images: the model can't see stripped images and must know they
-    # exist — otherwise "Was siehst du auf diesem Bild?" produces hallucinated
-    # descriptions instead of an honest "kann ich nicht sehen".
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
-    response = await _ollama_client.chat.completions.create(
-        model=LOCAL_MODEL, messages=openai_messages, max_tokens=max_tokens,
-    )
-    return (response.choices[0].message.content or "").strip()
-
-async def _gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
-    # Gemini 2.5 thinking models spend hidden reasoning tokens against the
-    # output budget; multiply the caller's cap generously so deep reasoning
-    # leaves enough headroom for a complete visible reply. Pro's hard ceiling
-    # is 65536; ×16 of typical callers (≤2048) stays well under it.
-    response = await _gemini_client.chat.completions.create(
-        model=model, messages=openai_messages, max_tokens=min(max_tokens * 16, 65536),
-    )
-    text = (response.choices[0].message.content or "").strip()
-    if not text:
-        finish = getattr(response.choices[0], "finish_reason", "?")
-        log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
-    return text
-
-# ── Client-side web search for DeepSeek (DuckDuckGo HTML, no API key) ─────────
-
-_DEEPSEEK_TOOLS = [{
-    "type": "function",
-    "function": {
-        "name": "web_search",
-        "description": (
-            "Search the web via DuckDuckGo for current information. "
-            "Use simple keyword queries (2-5 words), NO operators like site:, AND, OR, quotes. "
-            "For weather: 'Wetter Stadtname' or 'Wetter Stadtname Wochenende'. "
-            "Read results carefully — the answer is often in the first results. "
-            "Make at most 2 searches, then answer from what you have."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "Simple keyword search query, no operators"}
-            },
-            "required": ["query"]
-        }
-    }
-}]
-
-
-async def _ddg_search(query: str) -> str:
-    """Search DuckDuckGo via duckduckgo_search library (handles everything reliably)."""
-    try:
-        from duckduckgo_search import DDGS
-        results = await asyncio.to_thread(
-            lambda: list(DDGS().text(query, max_results=5))
-        )
-        # If no results, retry with a broader query (strip quotes and date specifics)
-        if not results:
-            broader = query.replace('"', '').strip()
-            import re as _re
-            broader = _re.sub(r'\d{1,2}[\.\s]+(?:Januar|Februar|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember|Jän|Feb|Mär|Apr|Jun|Jul|Aug|Sep|Okt|Nov|Dez)\s*\d{4}', '', broader)
-            broader = _re.sub(r'\d{1,2}\.\d{1,2}\.\d{4}', '', broader)
-            broader = " ".join(broader.split())
-            if broader != query.replace('"', '').strip():
-                results = await asyncio.to_thread(
-                    lambda: list(DDGS().text(broader, max_results=5))
-                )
-    except Exception as e:
-        log.warning(f"DDG search failed for '{query[:60]}': {e}")
-        return ""
-
-    lines = []
-    for r in results:
-        title = r.get("title", "")
-        body = r.get("body", "")
-        href = r.get("href", "")
-        lines.append(f"- {title}\n  {body}\n  {href}")
-
-    # Fetch top result's page content for richer context
-    if results and results[0].get("href"):
-        try:
-            text = await fetch_webpage_text(results[0]["href"])
-            if text:
-                lines.insert(0, f"[Page content from {results[0]['href']}]:\n{text[:3000]}")
-        except Exception:
-            pass
-
-    if not lines:
-        # DDGS returned nothing — try wttr.in as last-resort weather fallback
-        wttr = await _wttr_fallback(query)
-        if wttr:
-            lines.append(wttr)
-
-    return "\n".join(lines) if lines else ""
-
-
-_WEATHER_HINT_RE = re.compile(r'(?i)wetter|temperatur|grad|regen|vorhersage|wochenende')
-# Words that are part of the weather question, not the place name.
-_WEATHER_NOISE_RE = re.compile(
-    r'(?i)\b(wetter|temperatur(?:en)?|vorhersage|prognose|regen|grad|celsius|'
-    r'wochenende|morgen|heute|übermorgen|montag|dienstag|mittwoch|donnerstag|'
-    r'freitag|samstag|sonntag|in|im|am|an|auf|für|bei|von|nach|der|die|das|'
-    r'den|und|wie|wird|ist|es|was|nächste[nrs]?|diese[nrs]?|woche)\b'
-)
-
-
-def _extract_city(query: str) -> str | None:
-    """Best-effort place-name extraction from a weather query. Users type
-    lowercase in chat ('wetter in berlin morgen'), so capitalization is a
-    preference, not a requirement."""
-    cleaned = _WEATHER_NOISE_RE.sub(" ", query.replace('"', ""))
-    words = [w.strip(".,!?:;") for w in cleaned.split()]
-    candidates = [w for w in words if len(w) > 2]
-    if not candidates:
-        return None
-    capitalized = [w for w in candidates if w[0].isupper()]
-    return (capitalized or candidates)[0]
-
-
-async def _wttr_fallback(query: str) -> str | None:
-    """wttr.in one-liner forecast when DDG yields nothing for a weather query."""
-    if not _WEATHER_HINT_RE.search(query):
-        return None
-    city = _extract_city(query)
-    if not city:
-        return None
-    from urllib.parse import quote
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"https://wttr.in/{quote(city)}?format=4",
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                text = (await resp.text()).strip()
-        return f"wttr.in forecast for {city}: {text}" if text else None
-    except Exception:
-        return None
-
-
-async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str,
-                         use_tools: bool = True) -> str:
-    """Call DeepSeek via OpenAI-compatible endpoint with function-calling web search.
-
-    DeepSeek V4 is text-only — no vision/multimodal support. Images are stripped
-    and replaced with [HINWEIS: ...] annotations via _to_text_messages().
-    See the DeepSeek block comment at the _deepseek_client init for full capability matrix.
-    """
-    # DeepSeek reasoning models spend hidden reasoning tokens against the output
-    # budget — same problem as Gemini. Multiply generously so reasoning leaves
-    # enough headroom for a complete visible reply.
-    expanded = min(max_tokens * 16, 65536)
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
-
-    if not use_tools:
-        response = await _deepseek_client.chat.completions.create(
-            model=model, messages=openai_messages, max_tokens=expanded,
-        )
-        text = _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
-        if not text:
-            log.warning(f"Empty reply from {model} (no-tools call, usage={response.usage})")
-        return text
-
-    for _ in range(4):  # max 4 tool-call rounds
-        response = await _deepseek_client.chat.completions.create(
-            model=model, messages=openai_messages, max_tokens=expanded,
-            tools=_DEEPSEEK_TOOLS, tool_choice="auto",
-        )
-        msg = response.choices[0].message
-        finish = getattr(response.choices[0], "finish_reason", "")
-
-        if not msg.tool_calls:
-            text = (msg.content or "").strip()
-            if not text:
-                log.warning(f"Empty reply from {model} (finish_reason={finish}, usage={response.usage})")
-            # Strip any raw XML tool-call syntax the model may have hallucinated into the text
-            text = _strip_raw_tool_calls(text)
-            return text
-
-        # Execute tool calls
-        openai_messages.append({
-            "role": "assistant",
-            "content": msg.content or "",
-            "tool_calls": [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {"name": tc.function.name, "arguments": tc.function.arguments}
-                }
-                for tc in msg.tool_calls
-            ]
-        })
-        for tc in msg.tool_calls:
-            if tc.function.name == "web_search":
-                import json as _json
-                try:
-                    args = _json.loads(tc.function.arguments)
-                except Exception:
-                    args = {}
-                query = args.get("query", "")
-                log.info(f"DeepSeek web_search: '{query[:80]}'")
-                result = await _ddg_search(query)
-                openai_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result or "(no results)",
-                })
-            else:
-                # Every tool_call_id needs a tool message, or the next request
-                # is rejected as an invalid sequence. Hallucinated tool names
-                # get an error result instead of crashing the whole reply.
-                log.warning(f"DeepSeek called unknown tool {tc.function.name!r}")
-                openai_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": f"Error: unknown tool '{tc.function.name}'. Only 'web_search' exists.",
-                })
-
-    # Max rounds reached — one final call without tools
-    response = await _deepseek_client.chat.completions.create(
-        model=model, messages=openai_messages, max_tokens=expanded,
-    )
-    text = _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
-    if not text:
-        log.warning(f"Empty reply from {model} after max rounds (raw was {len(response.choices[0].message.content or '')} chars)")
-    return text or "(no response — tool loop exhausted all rounds)"
-
-# Single source lives in plugins.base — also applied at send time via
-# clean_chat_reply, so leaked markup never reaches Discord (and thus never
-# re-enters the history context).
-from plugins.base import strip_raw_tool_calls as _strip_raw_tool_calls  # noqa: E402
-
 def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -> str:
     """Sync. Stable across a day (base + always-on bot facts + date) so it caches.
 
@@ -927,11 +550,16 @@ def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -
     base = _base_prompt(channel_id)
     _now = datetime.now(TZ)
     _weekday = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"][_now.weekday()]
-    # Capabilities block is static per process → cache-safe.
+    # Capabilities block is static per process and channel type → cache-safe.
+    # It reflects what the ACTIVE model can do (vision / web search), so a
+    # Gemini/DeepSeek/Ollama tier doesn't claim abilities it lacks.
     # Date only (no HH:MM): keeps the cached system prompt stable across the day.
     # Current time is still visible to the model via [HH:MM] prefixes on user
     # messages built in fetch_context() and ask_claude().
-    base = base + "\n\n" + _capabilities_block() + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}."
+    caps = providers.caps_for_model(_model_for_tier(_tier(channel_id)))
+    base = (base + "\n\n"
+            + _capabilities_block(vision=caps.vision, web_search=caps.web_search)
+            + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}.")
     if memory_block:
         return memory_block + "\n\n" + base
     if _is_main(channel_id):
@@ -1149,12 +777,12 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
     """use_tools attaches the web_search tool. Off by default: evaluation,
     digest, summary and transcript calls must not burn paid searches."""
     if tier == "local":
-        return await _local_call(system, messages, max_tokens)
+        return await providers.local_call(system, messages, max_tokens)
     model = _model_for_tier(tier)
     if model.startswith("gemini"):
-        return await _gemini_call(system, messages, max_tokens, model)
+        return await providers.gemini_call(system, messages, max_tokens, model)
     if model.startswith("deepseek"):
-        return await _deepseek_call(system, messages, max_tokens, model, use_tools=use_tools)
+        return await providers.deepseek_call(system, messages, max_tokens, model, use_tools=use_tools)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
     # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
@@ -1178,12 +806,13 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
     """Single-turn LLM call without tool use."""
     messages = [{"role": "user", "content": user_content}]
     if tier == "local":
-        return await _local_call(system, messages, max_tokens)
+        return await providers.local_call(system, messages, max_tokens)
     model = _model_for_tier(tier)
     if model.startswith("gemini"):
-        return await _gemini_call(system, messages, max_tokens, model)
+        return await providers.gemini_call(system, messages, max_tokens, model)
     if model.startswith("deepseek"):
-        return await _deepseek_call(system, messages, max_tokens, model)
+        # use_tools=False: classification/emoji/filter calls must not search
+        return await providers.deepseek_call(system, messages, max_tokens, model, use_tools=False)
     response = await asyncio.to_thread(
         anthropic.messages.create,
         model=model, max_tokens=max_tokens,
@@ -1535,6 +1164,11 @@ async def fetch_webpage_text(url: str) -> str | None:
         return None
 
 
+# providers._ddg_search enriches DeepSeek search results with the top hit's
+# page text; injected here to avoid a circular import.
+providers.webpage_fetcher = fetch_webpage_text
+
+
 def _plain_webpage_urls(text: str) -> list[str]:
     """Extract fetchable article URLs — YouTube, direct images and GIF-host
     pages are handled elsewhere (youtube plugin / fetch_images)."""
@@ -1846,7 +1480,7 @@ async def on_ready():
         log.info(f"Main channels: {', '.join(f'#{cid}' for cid in MAIN_CHANNEL_IDS)} | Cooldown: {COOLDOWN_SECONDS}s")
     else:
         log.info("No main channels configured — responding to @mentions only")
-    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if GEMINI_API_KEY else "") + (" | deepseek: enabled" if DEEPSEEK_API_KEY else ""))
+    log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if providers.GEMINI_API_KEY else "") + (" | deepseek: enabled" if providers.DEEPSEEK_API_KEY else ""))
     log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
 

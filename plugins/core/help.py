@@ -78,11 +78,29 @@ Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}` / `{_model('DIGEST_FACTS_
 `v{BOT_VERSION}`"""
 
 
-def capabilities_block() -> str:
+def capabilities_block(vision: bool = True, web_search: bool = True) -> str:
     """Model-facing summary of the bot's abilities and limits, injected into the
     system prompt so the bot can answer "kannst du X?" correctly instead of
-    guessing. Keep in sync with build_help_text() when features change."""
+    guessing. Keep in sync with build_help_text() when features change.
+
+    vision/web_search reflect the ACTIVE model's capabilities (providers.
+    caps_for_model) — a Gemini/DeepSeek/Ollama-backed tier must not be told
+    it can see images or search the web when it can't."""
     n = _BOT_NAME
+
+    web_line = "- Webseiten: verlinkte Artikel liest du automatisch"
+    if web_search:
+        web_line += "; du kannst auch im Web suchen"
+
+    ability_lines = [web_line]
+    limit_lines = []
+    if vision:
+        ability_lines.append("- Bilder: kannst du sehen und beschreiben — bei unscharfen/kleinen Bildern nichts dazuerfinden")
+    else:
+        limit_lines.append("- Bilder kannst du NICHT sehen — sag ehrlich, dass du sie nicht sehen kannst")
+    if not web_search:
+        limit_lines.append("- Im Web suchen kannst du NICHT — sag das ehrlich, wenn aktuelle Infos gefragt sind")
+
     return f"""Deine Funktionen (Befehle funktionieren per @{n}-Mention):
 - Erinnerungen: einmalig ("erinnere mich in 2 Stunden an ...") und wiederkehrend ("... jeden Freitag um 20 Uhr"); anzeigen ("zeig meine Erinnerungen") und löschen ("lösche Erinnerung [ID]")
 - Zusammenfassungen: Chatverlauf ("fass zusammen"), YouTube-Videos (nur mit Untertiteln — du liest das Transkript, kein echtes Video-Verständnis) und ARD-Sounds-Podcast-Episoden (per Link)
@@ -91,8 +109,7 @@ def capabilities_block() -> str:
 - Stummschalten: "shut up" o.ä.; jede weitere Mention weckt dich wieder
 - CDU-Counter: "CDU" (Stand), "CDU reset <Grund>", "CDU Protokoll"
 - Gedächtnis: du merkst dir Fakten über Nutzer und den Server; Admins/Mods können Einträge ansehen ("was weißt du alles?"), löschen ("vergiss dass ...") und den Tag als Fakten speichern ("speichere was heute passiert ist")
-- Webseiten: verlinkte Artikel liest du automatisch; du kannst auch im Web suchen
-- Bilder: kannst du sehen und beschreiben — bei unscharfen/kleinen Bildern nichts dazuerfinden
+{chr(10).join(ability_lines)}
 - "/help" bzw. "was kannst du?" zeigt Nutzern die vollständige Befehlsliste
 
 Deine Grenzen (nicht behaupten, dass du es kannst):
@@ -100,7 +117,7 @@ Deine Grenzen (nicht behaupten, dass du es kannst):
 - Weitergeleitete Discord-Nachrichten kannst du nicht lesen
 - YouTube-Videos ohne Untertitel kannst du nicht zusammenfassen
 - Keine Sprachkanäle, keine DMs, kein Erstellen von Bildern
-
+{chr(10).join(limit_lines) if limit_lines else ""}
 Wenn jemand nach einer Funktion fragt, die es nicht gibt: sag das ehrlich und nenne ggf. die nächstliegende vorhandene Funktion."""
 
 
