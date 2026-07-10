@@ -296,6 +296,15 @@ def delete_memories(user_id: int, privileged: bool,
     before   = len(memories)
     owner_id = target_user_id if (privileged and target_user_id) else user_id
     if specific:
+        # Exact-ID delete: memory IDs (uuid4[:8], shown in MEMORY_LIST) beat
+        # keyword matching — "vergiss 3fa2b91c" removes exactly one entry.
+        sid = specific.strip().strip("`[]")
+        target = next((m for m in memories if m.get("id") == sid), None)
+        if target is not None:
+            if not privileged and target.get("user_id") != user_id:
+                return 0
+            save_memories([m for m in memories if m.get("id") != sid])
+            return 1
         # Privileged keyword deletes match ANY owner — digest/snapshot entries
         # are stored under the bot's own user_id and would otherwise be
         # undeletable via Discord. Non-privileged users only touch their own.

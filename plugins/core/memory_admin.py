@@ -16,7 +16,7 @@ class MemoryAdminPlugin(Plugin):
 
     INTENT_LINES = [
         "MEMORY_LIST – gespeicherte Fakten anzeigen (nur Admins/Mods)\n",
-        "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n",
+        "MEMORY_DELETE: <stichwort oder ID> – bestimmten Fakt löschen (nur Admins/Mods)\n",
     ]
 
     GATE_PATTERNS = [
@@ -54,7 +54,8 @@ class MemoryAdminPlugin(Plugin):
                     label = "[Allgemein]"
                 uses    = m.get("use_count", 0)
                 expires = f", läuft ab {m['expires']}" if m.get("expires") else ""
-                lines.append(f"**{label}** ({m['date']}{expires}, ×{uses}): {preview}")
+                mid     = m.get("id", "?")
+                lines.append(f"`[{mid}]` **{label}** ({m['date']}{expires}, ×{uses}): {preview}")
             header  = "Alles was ich weiß:"
             chunks  = []
             current = header

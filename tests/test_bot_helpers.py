@@ -147,6 +147,23 @@ class TestDeleteMemories:
         remaining = {m["id"] for m in bot.load_memories()}
         assert remaining == {"a", "c", "d"}
 
+    def test_delete_by_exact_id(self):
+        self._seed()
+        assert bot.delete_memories(self.ADMIN, True, specific="`[c]`") == 1
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"a", "b", "d"}
+
+    def test_delete_by_id_unprivileged_foreign_denied(self):
+        self._seed()
+        assert bot.delete_memories(self.USER, False, specific="a") == 0
+        assert len(bot.load_memories()) == 4
+
+    def test_delete_by_id_unprivileged_own_allowed(self):
+        self._seed()
+        assert bot.delete_memories(self.USER, False, specific="b") == 1
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"a", "c", "d"}
+
 
 class TestDocKind:
     def test_pdf_by_content_type(self):
