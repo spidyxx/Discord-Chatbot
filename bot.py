@@ -686,14 +686,17 @@ def _to_text_messages(messages: list, annotate_images: bool = False) -> list:
     return result
 
 async def _local_call(system: str, messages: list, max_tokens: int) -> str:
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    # annotate_images: the model can't see stripped images and must know they
+    # exist — otherwise "Was siehst du auf diesem Bild?" produces hallucinated
+    # descriptions instead of an honest "kann ich nicht sehen".
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
     response = await _ollama_client.chat.completions.create(
         model=LOCAL_MODEL, messages=openai_messages, max_tokens=max_tokens,
     )
     return (response.choices[0].message.content or "").strip()
 
 async def _gemini_call(system: str, messages: list, max_tokens: int, model: str) -> str:
-    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages)
+    openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
     # Gemini 2.5 thinking models spend hidden reasoning tokens against the
     # output budget; multiply the caller's cap generously so deep reasoning
     # leaves enough headroom for a complete visible reply. Pro's hard ceiling
