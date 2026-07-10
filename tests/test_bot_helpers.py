@@ -87,6 +87,30 @@ class TestUrlHelpers:
         assert len(bot._plain_webpage_urls(text)) == bot.MAX_URLS_PER_MSG
 
 
+class TestSsrfGuard:
+    def test_private_ip_literals_blocked(self):
+        for host in ["127.0.0.1", "10.1.2.3", "192.168.178.70", "172.16.0.1",
+                     "169.254.169.254", "0.0.0.0", "::1", "fe80::1", "fd00::1"]:
+            assert bot._is_private_address(host), host
+
+    def test_public_ips_allowed(self):
+        for host in ["8.8.8.8", "142.250.180.1", "2606:4700::1111"]:
+            assert not bot._is_private_address(host), host
+
+    def test_hostnames_not_ip_literals(self):
+        assert not bot._is_private_address("example.com")
+
+    def test_url_guard_blocks_local_names_and_literals(self):
+        async def scenario():
+            assert await bot._url_is_private("http://localhost:8080/admin")
+            assert await bot._url_is_private("http://foo.localhost/x")
+            assert await bot._url_is_private("http://192.168.178.1/router")
+            assert await bot._url_is_private("http://[::1]/")
+            assert await bot._url_is_private("http://nonexistent-host-xyz.invalid/")
+
+        asyncio.run(scenario())
+
+
 class TestDeleteMemories:
     ADMIN, USER, BOT_UID = 1, 2, 999
 

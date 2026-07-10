@@ -1360,10 +1360,40 @@ async def _send_chat_reply(channel, reply: str, prefix: str = "") -> None:
 
 _YT_URL_RE = re.compile(r'https?://(?:www\.)?(?:youtube\.com/watch\?[^\s]*v=|youtu\.be/)([A-Za-z0-9_-]{11})')
 _URL_RE = re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE)
-_PRIVATE_HOST_RE = re.compile(
-    r'^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|0\.0\.0\.0)',
-    re.IGNORECASE,
-)
+
+
+def _is_private_address(host: str) -> bool:
+    """True if host is an IP literal in a non-public range (v4 or v6)."""
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return (ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+async def _url_is_private(url: str) -> bool:
+    """SSRF guard: True unless the URL's host resolves exclusively to public
+    addresses. Covers IP literals (v4/v6), localhost names, and every DNS
+    result — the bot runs on a LAN where internal admin panels are reachable."""
+    try:
+        hostname = (urlparse(url).hostname or "").strip("[]").lower()
+    except ValueError:
+        return True
+    if not hostname:
+        return True
+    if hostname == "localhost" or hostname.endswith((".localhost", ".local")):
+        return True
+    if _is_private_address(hostname):
+        return True
+    try:
+        infos = await asyncio.to_thread(
+            socket.getaddrinfo, hostname, None, proto=socket.IPPROTO_TCP,
+        )
+    except OSError:
+        return True  # unresolvable — treat as blocked
+    return any(_is_private_address(info[4][0]) for info in infos)
 
 # IAB TCF v2 "accept all" consent cookie — accepted by most German CMP implementations
 # (Usercentrics, Consentmanager, OneTrust) when sent in the initial request
@@ -1390,39 +1420,46 @@ async def fetch_webpage_text(url: str) -> str | None:
     """
     if _YT_URL_RE.search(url) or IMAGE_URL_RE.search(url):
         return None  # Already handled elsewhere
-    # SSRF guard — reject private/loopback hosts before and after DNS resolution
-    try:
-        hostname = urlparse(url).hostname or ""
-        if _PRIVATE_HOST_RE.match(hostname):
-            log.warning(f"URL fetch blocked (private host): {url}")
-            return None
-        ip = await asyncio.to_thread(socket.gethostbyname, hostname)
-        if _PRIVATE_HOST_RE.match(ip):
-            log.warning(f"URL fetch blocked (private IP {ip}): {url}")
-            return None
-    except Exception:
-        return None
 
     give_up = False  # deterministic failure — retrying won't help
 
     async def _fetch_raw(headers: dict) -> bytes | None:
+        """Follow redirects manually so EVERY hop passes the SSRF guard —
+        a public URL redirecting to a LAN address must be blocked too."""
         nonlocal give_up
-        async with session.get(
-            url,
-            timeout=aiohttp.ClientTimeout(total=10),
-            max_redirects=5,
-            headers=headers,
-        ) as resp:
-            if resp.status != 200:
-                log.info(f"URL fetch: HTTP {resp.status}: {url}")
-                give_up = resp.status < 500
-                return None
-            ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
-            if "text/html" not in ct:
-                log.info(f"URL fetch skipped (not HTML, {ct}): {url}")
+        from yarl import URL as _URL
+        current = url
+        for _ in range(5):
+            if await _url_is_private(current):
+                log.warning(f"URL fetch blocked (private host): {current}")
                 give_up = True
                 return None
-            return await resp.content.read(MAX_FETCH_BYTES)
+            async with session.get(
+                current,
+                timeout=aiohttp.ClientTimeout(total=10),
+                allow_redirects=False,
+                headers=headers,
+            ) as resp:
+                if resp.status in (301, 302, 303, 307, 308):
+                    loc = resp.headers.get("location")
+                    if not loc:
+                        give_up = True
+                        return None
+                    current = str(resp.url.join(_URL(loc)))
+                    continue
+                if resp.status != 200:
+                    log.info(f"URL fetch: HTTP {resp.status}: {current}")
+                    give_up = resp.status < 500
+                    return None
+                ct = resp.headers.get("content-type", "").split(";")[0].strip().lower()
+                if "text/html" not in ct:
+                    log.info(f"URL fetch skipped (not HTML, {ct}): {current}")
+                    give_up = True
+                    return None
+                return await resp.content.read(MAX_FETCH_BYTES)
+        log.info(f"URL fetch: too many redirects: {url}")
+        give_up = True
+        return None
 
     def _extract(raw: bytes) -> str | None:
         text = trafilatura.extract(
