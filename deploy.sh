@@ -42,7 +42,9 @@ deploy() {
   "
 }
 
-TARGET="${1:-both}"
+# Bot 2 (Snoop) is disabled — the post-commit hook calls this with no argument,
+# so the default deploys Marvin only. Use "snoop"/"both" explicitly to override.
+TARGET="${1:-marvin}"
 case "$TARGET" in
   marvin)
     deploy "Discord_Chatbot"   "discord_chatbot"
@@ -55,7 +57,7 @@ case "$TARGET" in
     deploy "Discord_Chatbot_2" "discord_chatbot_2"
     ;;
   *)
-    echo "usage: $0 [marvin|snoop|both]   (default: both)" >&2
+    echo "usage: $0 [marvin|snoop|both]   (default: marvin)" >&2
     exit 1
     ;;
 esac
