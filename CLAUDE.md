@@ -1,10 +1,11 @@
 # Marvin — Discord Bot
 
 ## Stack
-- Python 3.12, discord.py 2.3.2, Anthropic SDK (Claude API)
-- Entry point: `bot.py`
-- Runs in Docker; see `Dockerfile` and `docker-compose.yml`
+- Python 3.12, discord.py 2.7.1, Anthropic SDK (Claude API)
+- Entry points: `bot.py` (Discord loop) + `providers.py` (non-Anthropic model backends & capability registry)
+- Runs in Docker; see `Dockerfile`; deployed via `deploy.sh` (post-commit hook — **every git commit deploys Marvin to production**; Bot 2/Snoop is disabled and only deployed with an explicit `deploy.sh snoop`)
 - All state in JSON files under `DATA_DIR` (default `/app/data`)
+- Tests: `pytest tests/` (see `requirements-dev.txt`); pure-Python helpers are covered, run before every commit
 
 ## Required env vars
 | Variable | Description |
@@ -26,16 +27,22 @@ Four model slots, each independently configurable:
 | `normal` | `NORMAL_MODEL` | sonnet |
 | `expensive` | `EXPENSIVE_MODEL` | sonnet |
 
-### Gemini support
+### Provider layer (`providers.py`)
 
-Set `GEMINI_API_KEY` to enable Google Gemini models. Then set any tier's model to a `gemini-*` name:
+All non-Anthropic backends live in `providers.py`: client init, message-format conversion, the DeepSeek DDG web-search loop, weather fallback, token-usage accounting, and an explicit **capability registry** (`caps_for_model`). Model routing is by name prefix (`gemini-*`, `deepseek-*`, the `local` slot → Ollama; everything else → Anthropic).
 
-```
-GEMINI_API_KEY=AIza...
-EXPENSIVE_MODEL=gemini-2.5-pro
-```
+| | vision | web search | prompt caching | PDF documents |
+|---|---|---|---|---|
+| Anthropic (`claude-*`) | ✅ | ✅ server tool | ✅ | ✅ |
+| Gemini (`gemini-*` via `GEMINI_API_KEY`) | ✅ image_url data URIs | ❌ | ❌ | ❌ |
+| DeepSeek (`deepseek-*` via `DEEPSEEK_API_KEY`) | ❌ (stripped + annotated) | ✅ DDG + wttr.in loop | ❌ | ❌ |
+| Ollama (`LOCAL_MODEL` + `OLLAMA_BASE_URL`) | ❌ (stripped + annotated) | ❌ | ❌ | ❌ |
 
-The bot detects model names starting with `gemini` and routes those calls through Google's OpenAI-compatible endpoint (`generativelanguage.googleapis.com/v1beta/openai/`) via the `openai` Python package. Prompt caching and web search tools are disabled for Gemini tiers — they use plain chat completions. Image blocks and `cache_control` markers are stripped automatically (reuses the same `_to_text_messages` helper as Ollama).
+The system prompt's `capabilities_block(vision=, web_search=, documents=)` is rendered from these caps — a tier backed by a model without vision is told it cannot see images instead of hallucinating. When adding a provider, extend `caps_for_model` and the call routing in `_claude_loop`/`_simple_call`; the capabilities block follows automatically.
+
+Gemini/DeepSeek reasoning models spend hidden reasoning tokens against the output budget; the caller's `max_tokens` is multiplied by `REASONING_TOKEN_MULTIPLIER` (default 16, env-configurable, capped at 65536).
+
+Token usage is recorded per day and model in `DATA_DIR/usage_stats.json` (90 days); a summary is logged daily at digest time.
 
 Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`). Defaults:
 
@@ -43,12 +50,13 @@ Each feature is assigned a tier via its own env var (e.g. `CLASSIFY_TIER=local`)
 |---|---|---|
 | `MAIN_TIER` | `expensive` | Main channel responses |
 | `MENTION_TIER` | `normal` | Mention-only channel responses |
+| `SHOULD_RESPOND_TIER` | `cheap` | Passive-channel SKIP/RESPOND gate (reply itself uses `MAIN_TIER`) |
 | `CLASSIFY_TIER` | `cheap` | Intent classification |
-| `EMOJI_TIER` | `cheap` | Emoji reactions |
-| `MEMORY_FILTER_TIER` | `cheap` | Memory relevance filtering |
+| `MEMORY_FILTER_TIER` | `cheap` | Trigger-memory relevance filtering |
 | `PROACTIVE_TIER` | `expensive` | Proactive messages |
-| `DIGEST_SUMMARY_TIER` | `expensive` | Daily digest summary |
-| `DIGEST_FACTS_TIER` | `normal` | Daily digest fact extraction |
+| `DIGEST_SUMMARY_TIER` | `expensive` | Daily digest (single call: summary + fact extraction) |
+
+Removed (now pure Python, no API call): emoji reactions (keyword map in `bot.py`), general-memory relevance (keyword overlap), reminder PROMPT/NOTIFY mode (classified in the same REMINDER call).
 
 ## Architecture
 
@@ -71,10 +79,20 @@ Discord presence/status strings rotate from `statuses.txt` at the repo root (one
 - **Frozen truncation boundary** (`_ctx_trunc_before`): which old user messages render truncated is decided at re-anchor time, not relative to the newest message.
 - **Tail-only reactions**: reaction counts are rendered only on messages newer than the truncation boundary, since counts change over time.
 
+**Known accepted gap**: the per-history image budget (`MAX_CONTEXT_IMAGES`, newest-first). When more images exist in the window than the budget allows and a new image arrives, an older message loses its embedded blocks — mid-history bytes change and the prefix cache misses once. Accepted trade-off: the bot must always see the newest images (see design intent in project memory).
+
 **Do not modify `_claude_loop`, `fetch_context`, or `build_system_prompt` without understanding these invariants** — anything that rewrites history bytes or the system prompt per call silently turns every request into a full-price cache write.
+
+### web_search opt-in
+The Anthropic `web_search` server tool is attached only where searching helps: conversational replies (`ask_claude`) and prompt-mode reminders. Evaluation, digest, summaries, snapshot and proactive calls run without tools (`use_tools=False`, the default in `_claude_loop`). DeepSeek's DDG loop honors the same flag.
 
 ### Intent classification
 `classify_intent()` uses the `cheap` tier to classify each @mention into an intent label (REMINDER, SUMMARY, etc.). The classifier prompt is built dynamically: a static preamble + plugin-contributed lines + a static footer. Plugins register their own intent labels and prompt lines — see plugin conventions below.
+
+**Keyword pre-gate**: before the classifier runs, `registry.gate_regex()` (union of all plugins' `GATE_PATTERNS`) is matched against the mention text. No pattern hit and no URL → the message goes straight to RESPOND with **no classify call**. Over-matching is harmless (costs one classify call); under-matching makes an intent unreachable for that phrasing — `tests/test_gate.py` pins every advertised /help phrasing. A plugin with `INTENT_LINES` but no `GATE_PATTERNS` disables the gate globally (fail open), so community plugins keep working.
+
+### Reading messages
+Forwarded messages (discord.py `message_snapshots`) are readable: their text is merged via `_display_text()`/`_msg_media_sources()` everywhere messages are read, including images inside forwards. PDF (≤5 MB, Anthropic document blocks) and text attachments (≤200 KB, inlined, 8k-char cap) are read from the **trigger message only** — never from history (token cost).
 
 ---
 
@@ -123,6 +141,13 @@ class MyPlugin(Plugin):
     INTENT_LINES = [
         "MY_INTENT – one-line description for the Haiku classifier\n",
     ]
+
+    # REQUIRED alongside INTENT_LINES: keyword regex fragments for the classify
+    # pre-gate. If none of any plugin's patterns (and no URL) match a mention,
+    # the Haiku classify call is skipped. A plugin with INTENT_LINES but no
+    # GATE_PATTERNS disables the gate for the whole bot (fail open, logged).
+    # Over-match generously; under-matching makes your intent unreachable.
+    GATE_PATTERNS = [r"mein\s+feature", r"\bmyword\b"]
 
     intent_order = 50   # controls position in the injected prompt section (lower = earlier)
 
@@ -178,17 +203,22 @@ Valid `model_tier` values: `local` | `cheap` | `normal` | `expensive`. If no `.c
 - **Multi-chunk replies**: use `split_message(text)` from `plugins.base` — splits at sentence boundaries before the 2000-char Discord limit.
 - **Logging**: `log = logging.getLogger(__name__)` — uses the module path as the logger name
 
-### pre_classify vs INTENT_LINES
+### pre_classify vs GATE_PATTERNS vs INTENT_LINES
 
-| | `pre_classify` | `INTENT_LINES` / Haiku |
-|---|---|---|
-| Cost | Free | ~1 Haiku call per mention |
-| Use when | URL/pattern match is deterministic | Natural language intent needed |
-| Input | Full `classify_text` (incl. replied-to message if it contains a URL) | Same |
+| | `pre_classify` | `GATE_PATTERNS` | `INTENT_LINES` / Haiku |
+|---|---|---|---|
+| Cost | Free | Free | ~1 Haiku call per gated mention |
+| Role | Deterministic classification (bypasses Haiku with a result) | Decides whether Haiku runs at all | Natural-language intent decision |
+| Use when | URL/pattern match IS the intent | Always, alongside INTENT_LINES | Phrasing varies |
+| Input | Full `classify_text` (incl. replied-to message if it contains a URL) | Same | Same |
 
 ### Verification after adding a plugin
 
 ```bash
+# Full test suite (includes gate-coverage tests — extend tests/test_gate.py
+# with your plugin's phrasings)
+.venv/bin/pytest tests/
+
 # Plugin discovery (no bot.py or Discord token needed)
 python -c "from plugins.registry import discover; print(discover())"
 
