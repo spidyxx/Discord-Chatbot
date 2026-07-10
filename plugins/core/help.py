@@ -73,7 +73,7 @@ Klassifizierung: `{_model('CLASSIFY_TIER', 'cheap')}`
 Emoji-Reaktionen: `Keyword-Map (kein API-Call)`
 Memory-Filter: `{_model('MEMORY_FILTER_TIER', 'cheap')}`
 Proaktiv: `{_model('PROACTIVE_TIER', 'expensive')}`
-Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}` / `{_model('DIGEST_FACTS_TIER', 'normal')}`
+Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}`
 
 `v{BOT_VERSION}`"""
 

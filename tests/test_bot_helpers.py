@@ -148,6 +148,31 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class TestSplitDigestReply:
+    def test_summary_and_facts(self):
+        raw = ("War heute einiges los, vor allem die Diskussion über Pizza.\n"
+               "===FAKTEN===\n"
+               "GENERAL | 'Ananas gehört auf Pizza' ist jetzt Server-Running-Gag | NONE")
+        summary, facts = bot._split_digest_reply(raw)
+        assert summary.startswith("War heute einiges los")
+        assert len(facts) == 1 and facts[0]["type"] == "general"
+
+    def test_keine_facts(self):
+        summary, facts = bot._split_digest_reply("Netter Tag heute.\n===FAKTEN===\nKEINE")
+        assert summary == "Netter Tag heute."
+        assert facts == []
+
+    def test_skip(self):
+        summary, facts = bot._split_digest_reply("SKIP")
+        assert summary.upper().startswith("SKIP")
+        assert facts == []
+
+    def test_missing_marker_degrades_to_summary_only(self):
+        summary, facts = bot._split_digest_reply("Nur eine Zusammenfassung ohne Marker.")
+        assert summary == "Nur eine Zusammenfassung ohne Marker."
+        assert facts == []
+
+
 class TestMemoryFilter:
     def test_keyword_relevant_two_word_overlap(self):
         words = bot._content_words("Wer will nachher Minecraft auf dem Server zocken?")

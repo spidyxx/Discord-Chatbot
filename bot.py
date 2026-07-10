@@ -82,8 +82,7 @@ CLASSIFY_TIER       = _tier_env("CLASSIFY_TIER",       "cheap")
 MEMORY_FILTER_TIER  = _tier_env("MEMORY_FILTER_TIER",  "cheap")
 REMINDER_TIER       = _tier_env("REMINDER_TIER",       "normal")
 PROACTIVE_TIER      = _tier_env("PROACTIVE_TIER",      "expensive")
-DIGEST_SUMMARY_TIER = _tier_env("DIGEST_SUMMARY_TIER", "expensive")
-DIGEST_FACTS_TIER   = _tier_env("DIGEST_FACTS_TIER",   "normal")
+DIGEST_SUMMARY_TIER = _tier_env("DIGEST_SUMMARY_TIER", "expensive")  # single call: summary + facts
 
 # Main channels: bot actively participates (debounced). Comma-separated IDs via MAIN_CHANNEL_IDS.
 # All other channels: bot only responds to @mentions.
@@ -1275,6 +1274,16 @@ async def rotate_status():
 
 
 @tasks.loop(time=dt_time(hour=DIGEST_HOUR, minute=DIGEST_MINUTE, tzinfo=TZ))
+def _split_digest_reply(raw: str) -> tuple[str, list[dict]]:
+    """Split the combined digest output into (summary, parsed facts).
+    Expected shape: <summary or SKIP> ===FAKTEN=== <fact lines or KEINE>."""
+    summary, _, fact_part = raw.partition("===FAKTEN===")
+    facts_text = fact_part.strip()
+    if facts_text.upper().startswith("KEINE"):
+        facts_text = ""
+    return summary.strip(), _parse_snapshot_facts(facts_text)
+
+
 async def daily_digest():
     if not DIGEST_ENABLED:
         return
@@ -1303,35 +1312,21 @@ async def daily_digest():
         context = "\n".join(lines)
         log.info(f"Digest #{channel_id}: analysing {len(lines)} messages")
 
-        summary = await _claude_loop(
-            _base_prompt(channel_id) + (
-                "\n\nDu schaust dir den heutigen Chatverlauf an und entscheidest ob etwas "
-                "Erwähnenswertes passiert ist – interessante Diskussionen, wichtige Infos, "
-                "lustige Momente oder relevante Themen. "
-                "Wenn ja: fasse es kurz in deinem typischen Stil zusammen, ohne Bullet-Points, "
-                "so wie du es einem Freund erzählen würdest. Kein 'Heute wurde...' – einfach drauf los. "
-                "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt: SKIP"
-            ),
-            [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
-            max_tokens=600, tier=DIGEST_SUMMARY_TIER,
-        )
-
-        if summary.upper().startswith("SKIP"):
-            log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
-            continue
-
-        await _send_chat_reply(channel, summary, prefix="**Tagesrückblick** 🌙\n")
-        log.info(f"Digest #{channel_id}: posted")
-
-        # Extract structured atomic facts from the same chat log and store them
-        label    = f"Tagesrückblick #{channel.name}"
+        # One call produces both the posted summary and the memory facts —
+        # the day's chat log (the expensive part) is only sent once.
         today      = datetime.now(TZ)
         week_date  = (today + timedelta(days=7)).strftime("%d.%m.%Y")
         month_date = (today + timedelta(days=30)).strftime("%d.%m.%Y")
-        fact_text = await _simple_call(
-            DIGEST_FACTS_TIER,
-            (
-                f"Du analysierst einen Discord-Chatverlauf und extrahierst strukturierte Gedächtniseinträge für den Bot {BOT_NAME}.\n\n"
+        raw = await _claude_loop(
+            _base_prompt(channel_id) + (
+                "\n\nDu schaust dir den heutigen Chatverlauf an und erledigst ZWEI Aufgaben in EINER Antwort.\n\n"
+                "TEIL 1 — Tagesrückblick: Entscheide ob etwas Erwähnenswertes passiert ist – "
+                "interessante Diskussionen, wichtige Infos, lustige Momente oder relevante Themen. "
+                "Wenn ja: fasse es kurz in deinem typischen Stil zusammen, ohne Bullet-Points, "
+                "so wie du es einem Freund erzählen würdest. Kein 'Heute wurde...' – einfach drauf los. "
+                "Wenn es wirklich nur bedeutungsloser Smalltalk war: antworte mit exakt SKIP und sonst nichts.\n\n"
+                "TEIL 2 — direkt nach dem Rückblick eine Zeile mit exakt ===FAKTEN=== und darunter "
+                f"strukturierte Gedächtniseinträge für dich ({BOT_NAME}) — oder das Wort KEINE.\n"
                 "Ausgabeformat — eine Zeile pro atomarer Tatsache, KEIN Fließtext:\n"
                 f"BOT | <Fakt über den Bot selbst> | <Trigger oder NONE> | <Ablaufdatum DD.MM.YYYY oder NONE>\n"
                 f"USER | <Anzeigename exakt wie im Chat> | <echte Namen/Spitznamen kommagetrennt oder NONE> | <Identitätsfakt>\n"
@@ -1341,7 +1336,7 @@ async def daily_digest():
                 f"- Tagesereignisse, kurzfristige Pläne, aktuelle Stimmung → {week_date}\n"
                 f"- Laufende Projekte, aktuelle Situation → {month_date}\n"
                 f"- Dauerhafte Eigenschaften, Rollen, Verhaltensregeln → NONE\n\n"
-                "Regeln:\n"
+                "Regeln für TEIL 2:\n"
                 "- Eine Zeile = eine Aussage. Nur gesicherte Fakten, keine Interpretation.\n"
                 "- BOT: nur dauerhafte Lore und Persönlichkeit (Titel, Rollen, Besitztümer, Running Gags, "
                 "Verhaltensregeln, Dynamiken mit Usern).\n"
@@ -1357,14 +1352,23 @@ async def daily_digest():
                 "- Im Zweifel: NICHT speichern oder ein Ablaufdatum setzen. Dauerhaft (NONE) ist die Ausnahme, "
                 "nicht die Regel.\n"
                 "- Maximal 6 Zeilen pro Tag. Lieber 2 gute als 6 mittelmäßige. Ein Tag ohne speichernswerte "
-                "Fakten ist normal — dann gib nichts aus.\n"
+                "Fakten ist normal — dann schreib KEINE.\n"
                 "- Kein Metakommentar, keine Leerzeilen, kein Markdown."
                 + _known_identities_block()
             ),
-            "Chatverlauf:\n" + context,
-            2000,
+            [{"role": "user", "content": f"Heutiger Chatverlauf:\n{context}"}],
+            max_tokens=2000, tier=DIGEST_SUMMARY_TIER,
         )
-        parsed = _parse_snapshot_facts(fact_text)
+
+        summary, parsed = _split_digest_reply(raw)
+        if not summary or summary.upper().startswith("SKIP"):
+            log.info(f"Digest #{channel_id}: nothing noteworthy, no post")
+            continue
+
+        await _send_chat_reply(channel, summary, prefix="**Tagesrückblick** 🌙\n")
+        log.info(f"Digest #{channel_id}: posted")
+
+        label = f"Tagesrückblick #{channel.name}"
         if len(parsed) > DIGEST_MAX_FACTS:
             log.info(f"Digest #{channel_id}: {len(parsed)} facts extracted, capping at {DIGEST_MAX_FACTS}")
             parsed = parsed[:DIGEST_MAX_FACTS]
@@ -1519,7 +1523,7 @@ async def on_ready():
     else:
         log.info("No main channels configured — responding to @mentions only")
     log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if providers.GEMINI_API_KEY else "") + (" | deepseek: enabled" if providers.DEEPSEEK_API_KEY else ""))
-    log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
+    log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}")
     log.info(f"Memories: {len(load_memories())}")
 
     global _announced_startup
