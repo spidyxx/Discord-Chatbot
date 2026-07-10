@@ -79,7 +79,6 @@ MENTION_TIER        = _tier_env("MENTION_TIER",        "normal")
 # so every gate decision cost an expensive-tier call.
 SHOULD_RESPOND_TIER = _tier_env("SHOULD_RESPOND_TIER", "cheap")
 CLASSIFY_TIER       = _tier_env("CLASSIFY_TIER",       "cheap")
-EMOJI_TIER          = _tier_env("EMOJI_TIER",          "cheap")
 MEMORY_FILTER_TIER  = _tier_env("MEMORY_FILTER_TIER",  "cheap")
 REMINDER_TIER       = _tier_env("REMINDER_TIER",       "normal")
 PROACTIVE_TIER      = _tier_env("PROACTIVE_TIER",      "expensive")
@@ -1221,14 +1220,35 @@ async def classify_intent(text: str) -> tuple[str, str]:
 
     return "RESPOND", ""
 
-async def get_emoji_reaction(message_text: str) -> str | None:
+# Keyword→emoji rules for reactions on skipped messages. First match wins;
+# no match → no reaction (reacting only when confident reads more natural
+# than a random thumbs-up). Pure Python — replaced a Haiku call per reaction.
+_EMOJI_RULES: list[tuple[re.Pattern, list[str]]] = [
+    (re.compile(r"(?i)😂|🤣|\blo+l\b|haha|hehe|\blach|witzig|lustig"),            ["😂", "🤣"]),
+    (re.compile(r"(?i)\bdanke\b|\bthx\b|\bmerci\b|\bdankeschön\b"),               ["🙏"]),
+    (re.compile(r"(?i)glückwunsch|congrats|geburtstag|bestanden|gewonnen"),       ["🎉", "🥳"]),
+    (re.compile(r"(?i)\bgeil\b|\bmega\b|krass|\bnice\b|genial|perfekt|hammer|\btop\b"), ["🔥", "👌", "💪"]),
+    (re.compile(r"(?i)traurig|schade|\bmist\b|scheiße|kacke|frustriert|ärgerlich"), ["😢", "😮‍💨"]),
+    (re.compile(r"(?i)pizza|\bessen\b|kochen|hunger|lecker|\bgrill"),             ["😋", "🍕"]),
+    (re.compile(r"(?i)\bbier\b|\bwein\b|prost|feierabend"),                       ["🍻"]),
+    (re.compile(r"(?i)musik|\bsong\b|\blied\b|konzert|\balbum\b"),                ["🎵"]),
+    (re.compile(r"(?i)fußball|bundesliga|\btor\b|champions league"),              ["⚽"]),
+    (re.compile(r"(?i)\bmüde\b|schlafen|\bgähn|\bmontag\b"),                      ["😴"]),
+    (re.compile(r"(?i)\bliebe\b|\bherz\b|knuddel"),                               ["❤️"]),
+    (re.compile(r"(?i)\bkatze\b|\bhund\b|\bkater\b|\bhaustier"),                  ["🐾"]),
+    (re.compile(r"(?i)\bsonne\b|\bsommer\b|\bhitze\b|\bstrand\b"),                ["☀️"]),
+    (re.compile(r"(?i)\bregen\b|gewitter|\bschnee\b"),                            ["🌧️"]),
+]
+
+
+def get_emoji_reaction(message_text: str) -> str | None:
+    """Keyword-mapped emoji reaction, or None. Pure Python, no API call."""
     if random.random() > EMOJI_REACTION_RATE:
         return None
-    try:
-        result = await _simple_call(EMOJI_TIER, "Antworte mit einem einzigen passenden Emoji, oder SKIP wenn keins passt.", message_text, 5)
-        return None if result.upper() == "SKIP" else result
-    except Exception:
-        return None
+    for rx, emojis in _EMOJI_RULES:
+        if rx.search(message_text or ""):
+            return random.choice(emojis)
+    return None
 
 # ── Background tasks ──────────────────────────────────────────────────────────
 
@@ -1484,7 +1504,7 @@ async def on_ready():
     else:
         log.info("No main channels configured — responding to @mentions only")
     log.info(f"Models — expensive: {EXPENSIVE_MODEL} | normal: {NORMAL_MODEL} | cheap: {CHEAP_MODEL}" + (f" | local: {LOCAL_MODEL}" if LOCAL_MODEL else "") + (" | gemini: enabled" if providers.GEMINI_API_KEY else "") + (" | deepseek: enabled" if providers.DEEPSEEK_API_KEY else ""))
-    log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | emoji: {EMOJI_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
+    log.info(f"Tiers — main: {MAIN_TIER} | mention: {MENTION_TIER} | classify: {CLASSIFY_TIER} | memory: {MEMORY_FILTER_TIER} | proactive: {PROACTIVE_TIER} | digest: {DIGEST_SUMMARY_TIER}/{DIGEST_FACTS_TIER}")
     log.info(f"Memories: {len(load_memories())}")
 
     global _announced_startup
@@ -1725,7 +1745,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
                 await _send_chat_reply(channel, reply)
             else:
                 log.info(f"Channel #{channel_id}: SKIP")
-                emoji = await get_emoji_reaction(last_msg.content)
+                emoji = get_emoji_reaction(last_msg.content)
                 if emoji:
                     try:
                         await last_msg.add_reaction(emoji)

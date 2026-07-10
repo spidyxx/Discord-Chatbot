@@ -148,6 +148,22 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class TestEmojiReaction:
+    def test_keyword_match(self, monkeypatch):
+        monkeypatch.setattr(bot.random, "random", lambda: 0.0)  # pass the rate gate
+        assert bot.get_emoji_reaction("hahaha das war so witzig") in ("😂", "🤣")
+        assert bot.get_emoji_reaction("danke dir!") == "🙏"
+        assert bot.get_emoji_reaction("herzlichen Glückwunsch!") in ("🎉", "🥳")
+
+    def test_no_keyword_no_reaction(self, monkeypatch):
+        monkeypatch.setattr(bot.random, "random", lambda: 0.0)
+        assert bot.get_emoji_reaction("ich fahre nachher zur Tankstelle") is None
+
+    def test_rate_gate(self, monkeypatch):
+        monkeypatch.setattr(bot.random, "random", lambda: 1.0)  # always above rate
+        assert bot.get_emoji_reaction("hahaha witzig") is None
+
+
 def test_no_unanchored_oldest_first_history_calls():
     """history(oldest_first=True) without after= paginates from the channel's
     FIRST message ever — regression guard for the should_respond context bug."""

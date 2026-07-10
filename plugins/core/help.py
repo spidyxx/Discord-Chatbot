@@ -70,7 +70,7 @@ Cooldown: `{_COOLDOWN}s`
 Hauptkanal: `{_model('MAIN_TIER', 'expensive')}`
 Mention-Kanal: `{_model('MENTION_TIER', 'normal')}`
 Klassifizierung: `{_model('CLASSIFY_TIER', 'cheap')}`
-Emoji: `{_model('EMOJI_TIER', 'cheap')}`
+Emoji-Reaktionen: `Keyword-Map (kein API-Call)`
 Memory-Filter: `{_model('MEMORY_FILTER_TIER', 'cheap')}`
 Proaktiv: `{_model('PROACTIVE_TIER', 'expensive')}`
 Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}` / `{_model('DIGEST_FACTS_TIER', 'normal')}`
