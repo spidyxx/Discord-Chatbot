@@ -858,6 +858,16 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
                     "tool_call_id": tc.id,
                     "content": result or "(no results)",
                 })
+            else:
+                # Every tool_call_id needs a tool message, or the next request
+                # is rejected as an invalid sequence. Hallucinated tool names
+                # get an error result instead of crashing the whole reply.
+                log.warning(f"DeepSeek called unknown tool {tc.function.name!r}")
+                openai_messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": f"Error: unknown tool '{tc.function.name}'. Only 'web_search' exists.",
+                })
 
     # Max rounds reached — one final call without tools
     response = await _deepseek_client.chat.completions.create(
