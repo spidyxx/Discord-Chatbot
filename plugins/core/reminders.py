@@ -138,6 +138,12 @@ def _delete(rid: str, user_id: int, privileged: bool) -> bool:
 
 
 def _restore():
+    # Idempotency: cancel any live tasks first so a repeated call (e.g. a
+    # future on_ready re-entry) can't double-schedule the same reminders.
+    for task in _reminder_tasks.values():
+        task.cancel()
+    _reminder_tasks.clear()
+
     now       = datetime.now(timezone.utc).timestamp()
     reminders = _load()
     active    = []

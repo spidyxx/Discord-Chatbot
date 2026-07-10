@@ -1738,9 +1738,19 @@ async def slash_help(interaction: discord.Interaction):
 
 _LAST_VERSION_FILE = DATA_DIR / "last_announced_version.txt"
 _announced_startup = False
+_on_ready_ran      = False
 
 @bot.event
 async def on_ready():
+    # discord.py fires on_ready again after gateway resumes. Re-running this
+    # handler would duplicate reminder tasks and raise RuntimeError from the
+    # already-started task loops.
+    global _on_ready_ran
+    if _on_ready_ran:
+        log.info("on_ready re-fired (session resume) — skipping re-initialisation")
+        return
+    _on_ready_ran = True
+
     cleanup_expired_memories()
     await plugin_registry.on_ready()
     rotate_status.start()
