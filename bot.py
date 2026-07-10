@@ -75,6 +75,9 @@ def _tier_env(name: str, default: str) -> str:
 
 MAIN_TIER           = _tier_env("MAIN_TIER",           "expensive")
 MENTION_TIER        = _tier_env("MENTION_TIER",        "normal")
+# Passive-channel SKIP/RESPOND gate. Previously rode implicitly on MAIN_TIER,
+# so every gate decision cost an expensive-tier call.
+SHOULD_RESPOND_TIER = _tier_env("SHOULD_RESPOND_TIER", "cheap")
 CLASSIFY_TIER       = _tier_env("CLASSIFY_TIER",       "cheap")
 EMOJI_TIER          = _tier_env("EMOJI_TIER",          "cheap")
 MEMORY_FILTER_TIER  = _tier_env("MEMORY_FILTER_TIER",  "cheap")
@@ -1004,7 +1007,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     else:
         user_content = text
     reply = await _claude_loop(system, [{"role": "user", "content": user_content}],
-        tier=_tier(channel_id))
+        tier=SHOULD_RESPOND_TIER)
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
 
