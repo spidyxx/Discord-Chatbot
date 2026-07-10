@@ -66,6 +66,14 @@ class TestToTextMessages:
         out = providers.to_text_messages(msgs)
         assert "<tool_calls>" not in out[0]["content"]
 
+    def test_documents_stripped_and_annotated(self):
+        msgs = [{"role": "user", "content": [
+            {"type": "text", "text": "lies das mal"},
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "x"}},
+        ]}]
+        out = providers.to_text_messages(msgs, annotate_images=True)
+        assert "PDF-Dokument(e) angehängt" in out[0]["content"]
+
 
 class TestToOpenaiMessages:
     def test_user_image_becomes_image_url(self):

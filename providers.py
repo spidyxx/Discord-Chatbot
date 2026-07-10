@@ -138,6 +138,9 @@ def to_openai_messages(messages: list) -> list:
                         "type": "image_url",
                         "image_url": {"url": f"data:{mediatype};base64,{data}"}
                     })
+                elif b.get("type") == "document":
+                    # Anthropic-only block type — replaced with an honest note.
+                    text_parts.append("[HINWEIS: PDF-Dokument angehängt — du kannst PDFs NICHT lesen. Sag das ehrlich.]")
             if text_parts:
                 parts.insert(0, {"type": "text", "text": " ".join(text_parts)})
             if not parts:
@@ -183,6 +186,7 @@ def to_text_messages(messages: list, annotate_images: bool = False) -> list:
     for msg in messages:
         content = msg["content"]
         image_count = 0
+        doc_count = 0
         if isinstance(content, str):
             text = content
         elif isinstance(content, list):
@@ -194,11 +198,16 @@ def to_text_messages(messages: list, annotate_images: bool = False) -> list:
                     texts.append(b["text"])
                 elif b.get("type") == "image":
                     image_count += 1
+                elif b.get("type") == "document":
+                    doc_count += 1
             text = " ".join(texts).strip()
         else:
             continue
         if annotate_images and image_count:
             note = f"[HINWEIS: {image_count} Bild(er) angehängt — du kannst Bilder NICHT sehen, nur Text. Sag ehrlich, dass du das Bild nicht sehen kannst.]"
+            text = f"{text}\n{note}" if text else note
+        if annotate_images and doc_count:
+            note = f"[HINWEIS: {doc_count} PDF-Dokument(e) angehängt — du kannst PDFs NICHT lesen. Sag das ehrlich.]"
             text = f"{text}\n{note}" if text else note
         if not text:
             continue

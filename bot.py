@@ -574,7 +574,8 @@ def build_system_prompt(channel_id: int | None = None, memory_block: str = "") -
     # messages built in fetch_context() and ask_claude().
     caps = providers.caps_for_model(_model_for_tier(_tier(channel_id)))
     base = (base + "\n\n"
-            + _capabilities_block(vision=caps.vision, web_search=caps.web_search)
+            + _capabilities_block(vision=caps.vision, web_search=caps.web_search,
+                                  documents=caps.documents)
             + f"\n\nAktuelles Datum: {_weekday}, {_now.strftime('%d.%m.%Y')}.")
     if memory_block:
         return memory_block + "\n\n" + base
@@ -764,6 +765,70 @@ async def fetch_images(attachments: list, embeds: list = None, content: str = ""
                 log.info(f"GIF-host image loaded: {page_url} → {img_url}")
 
     return blocks
+
+# ── Document attachments (PDF via Anthropic document blocks, text inline) ────
+
+_TEXT_SUFFIXES = {".txt", ".md", ".py", ".json", ".csv", ".log", ".yml", ".yaml",
+                  ".toml", ".ini", ".cfg", ".sh", ".js", ".ts", ".html", ".css", ".xml"}
+MAX_PDF_BYTES  = 5 * 1024 * 1024    # documents are token-heavy; stay well under API limits
+MAX_TEXT_BYTES = 200 * 1024
+MAX_TEXT_CHARS = 8000
+
+
+def _doc_kind(content_type: str, filename: str) -> str | None:
+    """'pdf', 'text' or None for an attachment. Images are handled separately."""
+    ct = (content_type or "").split(";")[0].strip().lower()
+    suffix = Path(filename or "").suffix.lower()
+    if ct == "application/pdf" or suffix == ".pdf":
+        return "pdf"
+    if ct.startswith("image/"):
+        return None
+    if ct.startswith("text/") or suffix in _TEXT_SUFFIXES:
+        return "text"
+    return None
+
+
+async def fetch_documents(attachments: list) -> list[dict]:
+    """Download PDF and text attachments of the TRIGGER message as content
+    blocks — PDFs as Anthropic document blocks, text files decoded inline.
+    Never applied to history messages (documents are token bombs).
+    Non-Anthropic models get the blocks stripped + annotated in providers."""
+    blocks: list[dict] = []
+    docs = [(att, _doc_kind(att.content_type, att.filename)) for att in attachments]
+    docs = [(att, kind) for att, kind in docs if kind]
+    if not docs:
+        return blocks
+    async with aiohttp.ClientSession() as session:
+        for att, kind in docs:
+            name = att.filename or "datei"
+            try:
+                if kind == "pdf":
+                    if att.size > MAX_PDF_BYTES:
+                        blocks.append({"type": "text", "text":
+                            f"[PDF-Anhang '{name}' übersprungen: {att.size / 1024 / 1024:.1f} MB > 5 MB]"})
+                        continue
+                    async with session.get(att.url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                        data = await resp.read()
+                    blocks.append({"type": "document", "source": {
+                        "type": "base64", "media_type": "application/pdf",
+                        "data": base64.standard_b64encode(data).decode()}})
+                    log.info(f"PDF attachment loaded: {name} ({att.size / 1024:.0f} KB)")
+                else:
+                    if att.size > MAX_TEXT_BYTES:
+                        blocks.append({"type": "text", "text":
+                            f"[Textanhang '{name}' übersprungen: zu groß]"})
+                        continue
+                    async with session.get(att.url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        data = await resp.read()
+                    text = data.decode("utf-8", errors="replace")
+                    if len(text) > MAX_TEXT_CHARS:
+                        text = text[:MAX_TEXT_CHARS] + "\n[… gekürzt]"
+                    blocks.append({"type": "text", "text": f"[Inhalt der Datei {name}]:\n{text}"})
+                    log.info(f"Text attachment loaded: {name} ({len(text)} chars)")
+            except Exception as e:
+                log.warning(f"Failed to load document attachment ({name}): {e}")
+    return blocks
+
 
 # ── Forwarded messages (discord.py >= 2.4 message_snapshots) ─────────────────
 
@@ -1737,6 +1802,7 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
 
             _atts, _embeds, _content = _msg_media_sources(img_source)
             image_blocks = await fetch_images(_atts, _embeds, _content)
+            image_blocks += await fetch_documents(_atts)
 
             # Hard skip: message @-mentions another user (and not the bot) and
             # doesn't reference the bot by name — clearly addressed elsewhere.
@@ -1860,12 +1926,15 @@ async def on_message(message: discord.Message):
 
         _atts, _embeds, _content = _msg_media_sources(message)
         image_blocks = await fetch_images(_atts, _embeds, _content)
+        doc_blocks   = await fetch_documents(_atts)
         if message.reference and message.reference.resolved:
             ref = message.reference.resolved
             ref_images = await fetch_images(ref.attachments, ref.embeds, ref.content or "")
             if ref_images:
                 image_blocks = ref_images + image_blocks
-        has_images   = bool(image_blocks)
+            doc_blocks = await fetch_documents(ref.attachments) + doc_blocks
+        image_blocks = image_blocks + doc_blocks
+        has_images   = any(b.get("type") == "image" for b in image_blocks)
         privileged   = is_privileged(message.author) if isinstance(message.author, discord.Member) else False
 
         clean = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "")
@@ -1876,6 +1945,8 @@ async def on_message(message: discord.Message):
             clean = f"{clean}\n{fwd}".strip()
         if not clean and has_images:
             clean = "Was siehst du auf diesem Bild?"
+        elif not clean and image_blocks:
+            clean = "Was steht in dieser Datei?"
         elif not clean:
             return
 

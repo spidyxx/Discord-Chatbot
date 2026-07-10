@@ -148,6 +148,24 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class TestDocKind:
+    def test_pdf_by_content_type(self):
+        assert bot._doc_kind("application/pdf", "handbuch.pdf") == "pdf"
+
+    def test_pdf_by_suffix_only(self):
+        assert bot._doc_kind("application/octet-stream", "scan.PDF") == "pdf"
+
+    def test_text_variants(self):
+        assert bot._doc_kind("text/plain; charset=utf-8", "notiz.txt") == "text"
+        assert bot._doc_kind("", "script.py") == "text"
+        assert bot._doc_kind("application/json", "data.json") == "text"
+
+    def test_images_and_binaries_excluded(self):
+        assert bot._doc_kind("image/png", "foto.png") is None
+        assert bot._doc_kind("application/zip", "archiv.zip") is None
+        assert bot._doc_kind("audio/mpeg", "song.mp3") is None
+
+
 class _Snap:
     def __init__(self, content="", attachments=(), embeds=()):
         self.content = content

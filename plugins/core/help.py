@@ -27,7 +27,7 @@ def build_help_text() -> str:
     return f"""**Was ich kann:**
 
 💬 **Allgemein** *(alle Kanäle)*
-Ich beantworte Fragen, suche im Web, erkenne Bilder und lese verlinkte Artikel automatisch – immer auf @Mention.
+Ich beantworte Fragen, suche im Web, erkenne Bilder, lese PDFs/Textdateien als Anhang und verlinkte Artikel automatisch – immer auf @Mention.
 In Hauptkanälen mische ich mich von selbst ein, nutze gespeichertes Hintergrundwissen und poste abends einen Tagesrückblick, wenn was los war.
 
 ⏰ **Erinnerungen** *(alle Kanäle)*
@@ -78,14 +78,15 @@ Digest: `{_model('DIGEST_SUMMARY_TIER', 'expensive')}`
 `v{BOT_VERSION}`"""
 
 
-def capabilities_block(vision: bool = True, web_search: bool = True) -> str:
+def capabilities_block(vision: bool = True, web_search: bool = True,
+                       documents: bool = True) -> str:
     """Model-facing summary of the bot's abilities and limits, injected into the
     system prompt so the bot can answer "kannst du X?" correctly instead of
     guessing. Keep in sync with build_help_text() when features change.
 
-    vision/web_search reflect the ACTIVE model's capabilities (providers.
-    caps_for_model) — a Gemini/DeepSeek/Ollama-backed tier must not be told
-    it can see images or search the web when it can't."""
+    vision/web_search/documents reflect the ACTIVE model's capabilities
+    (providers.caps_for_model) — a Gemini/DeepSeek/Ollama-backed tier must not
+    be told it can see images or read PDFs when it can't."""
     n = _BOT_NAME
 
     web_line = "- Webseiten: verlinkte Artikel liest du automatisch"
@@ -98,6 +99,11 @@ def capabilities_block(vision: bool = True, web_search: bool = True) -> str:
         ability_lines.append("- Bilder: kannst du sehen und beschreiben — bei unscharfen/kleinen Bildern nichts dazuerfinden")
     else:
         limit_lines.append("- Bilder kannst du NICHT sehen — sag ehrlich, dass du sie nicht sehen kannst")
+    if documents:
+        ability_lines.append("- Angehängte PDFs (bis 5 MB) und Textdateien kannst du lesen")
+        limit_lines.append("- Andere Dateianhänge (Word, Audio, Video ...) siehst du NICHT")
+    else:
+        limit_lines.append("- PDF-Anhänge kannst du NICHT lesen; Textdateien werden dir als Text gezeigt")
     if not web_search:
         limit_lines.append("- Im Web suchen kannst du NICHT — sag das ehrlich, wenn aktuelle Infos gefragt sind")
 
@@ -113,7 +119,6 @@ def capabilities_block(vision: bool = True, web_search: bool = True) -> str:
 - "/help" bzw. "was kannst du?" zeigt Nutzern die vollständige Befehlsliste
 
 Deine Grenzen (nicht behaupten, dass du es kannst):
-- Dateianhänge außer Bildern (PDF, Word, Audio ...) siehst du NICHT
 - YouTube-Videos ohne Untertitel kannst du nicht zusammenfassen
 - Keine Sprachkanäle, keine DMs, kein Erstellen von Bildern
 {chr(10).join(limit_lines) if limit_lines else ""}
