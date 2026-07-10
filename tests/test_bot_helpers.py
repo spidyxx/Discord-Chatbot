@@ -51,6 +51,42 @@ class TestUrlHelpers:
         assert len(bot._plain_webpage_urls(text)) == bot.MAX_URLS_PER_MSG
 
 
+class TestDeleteMemories:
+    ADMIN, USER, BOT_UID = 1, 2, 999
+
+    def _seed(self):
+        bot.save_memories([
+            {"id": "a", "user_id": self.ADMIN,   "content": "Admin-Notiz über Kekse"},
+            {"id": "b", "user_id": self.USER,    "content": "User mag Kekse"},
+            {"id": "c", "user_id": self.BOT_UID, "content": "Digest: Server mag Kekse"},
+            {"id": "d", "user_id": self.USER,    "content": "User spielt Schach"},
+        ])
+
+    def test_privileged_keyword_deletes_any_owner(self):
+        self._seed()
+        assert bot.delete_memories(self.ADMIN, True, specific="Kekse") == 3
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"d"}
+
+    def test_unprivileged_keyword_only_own(self):
+        self._seed()
+        assert bot.delete_memories(self.USER, False, specific="Kekse") == 1
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"a", "c", "d"}
+
+    def test_privileged_bulk_stays_owner_scoped(self):
+        self._seed()
+        assert bot.delete_memories(self.ADMIN, True) == 1
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"b", "c", "d"}
+
+    def test_privileged_targeted_keyword_scoped_to_target(self):
+        self._seed()
+        assert bot.delete_memories(self.ADMIN, True, specific="Kekse", target_user_id=self.USER) == 1
+        remaining = {m["id"] for m in bot.load_memories()}
+        assert remaining == {"a", "c", "d"}
+
+
 def test_no_unanchored_oldest_first_history_calls():
     """history(oldest_first=True) without after= paginates from the channel's
     FIRST message ever — regression guard for the should_respond context bug."""

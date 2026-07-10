@@ -333,10 +333,19 @@ def delete_memories(user_id: int, privileged: bool,
     before   = len(memories)
     owner_id = target_user_id if (privileged and target_user_id) else user_id
     if specific:
-        memories = [m for m in memories if not (
-            m.get("user_id") == owner_id and specific.lower() in m["content"].lower()
-        )]
+        # Privileged keyword deletes match ANY owner — digest/snapshot entries
+        # are stored under the bot's own user_id and would otherwise be
+        # undeletable via Discord. Non-privileged users only touch their own.
+        def _match(m: dict) -> bool:
+            if specific.lower() not in m["content"].lower():
+                return False
+            if privileged and not target_user_id:
+                return True
+            return m.get("user_id") == owner_id
+        memories = [m for m in memories if not _match(m)]
     else:
+        # Bulk delete ("all") stays owner-scoped even for admins — a single
+        # keyword-less command must not wipe the entire memory file.
         memories = [m for m in memories if m.get("user_id") != owner_id]
     save_memories(memories)
     return before - len(memories)
