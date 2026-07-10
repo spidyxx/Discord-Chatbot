@@ -774,24 +774,56 @@ async def _ddg_search(query: str) -> str:
 
     if not lines:
         # DDGS returned nothing — try wttr.in as last-resort weather fallback
-        low = query.lower()
-        if any(w in low for w in ("wetter", "temperatur", "grad", "regen", "vorhersage", "wochenende")):
-            import re as _re
-            import httpx as _httpx
-            # Extract city name: take the longest capitalized word(s) after stripping known prefixes
-            clean = _re.sub(r'(?i)wetter|temperatur|vorhersage|wochenende|morgen|heute|sonntag|montag|dienstag|mittwoch|donnerstag|freitag|samstag', ' ', query)
-            words = [w for w in clean.split() if w[0].isupper() and len(w) > 2]
-            if words:
-                city = words[0]
-                try:
-                    async with _httpx.AsyncClient(timeout=8) as client:
-                        r = await client.get(f"https://wttr.in/{city}?format=4")
-                        if r.status_code == 200:
-                            lines.append(f"wttr.in forecast for {city}: {r.text.strip()}")
-                except Exception:
-                    pass
+        wttr = await _wttr_fallback(query)
+        if wttr:
+            lines.append(wttr)
 
     return "\n".join(lines) if lines else ""
+
+
+_WEATHER_HINT_RE = re.compile(r'(?i)wetter|temperatur|grad|regen|vorhersage|wochenende')
+# Words that are part of the weather question, not the place name.
+_WEATHER_NOISE_RE = re.compile(
+    r'(?i)\b(wetter|temperatur(?:en)?|vorhersage|prognose|regen|grad|celsius|'
+    r'wochenende|morgen|heute|übermorgen|montag|dienstag|mittwoch|donnerstag|'
+    r'freitag|samstag|sonntag|in|im|am|an|auf|für|bei|von|nach|der|die|das|'
+    r'den|und|wie|wird|ist|es|was|nächste[nrs]?|diese[nrs]?|woche)\b'
+)
+
+
+def _extract_city(query: str) -> str | None:
+    """Best-effort place-name extraction from a weather query. Users type
+    lowercase in chat ('wetter in berlin morgen'), so capitalization is a
+    preference, not a requirement."""
+    cleaned = _WEATHER_NOISE_RE.sub(" ", query.replace('"', ""))
+    words = [w.strip(".,!?:;") for w in cleaned.split()]
+    candidates = [w for w in words if len(w) > 2]
+    if not candidates:
+        return None
+    capitalized = [w for w in candidates if w[0].isupper()]
+    return (capitalized or candidates)[0]
+
+
+async def _wttr_fallback(query: str) -> str | None:
+    """wttr.in one-liner forecast when DDG yields nothing for a weather query."""
+    if not _WEATHER_HINT_RE.search(query):
+        return None
+    city = _extract_city(query)
+    if not city:
+        return None
+    from urllib.parse import quote
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://wttr.in/{quote(city)}?format=4",
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                text = (await resp.text()).strip()
+        return f"wttr.in forecast for {city}: {text}" if text else None
+    except Exception:
+        return None
 
 
 async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str,

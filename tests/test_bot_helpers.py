@@ -87,6 +87,24 @@ class TestUrlHelpers:
         assert len(bot._plain_webpage_urls(text)) == bot.MAX_URLS_PER_MSG
 
 
+class TestWeatherCityExtraction:
+    def test_capitalized_city(self):
+        assert bot._extract_city("Wetter Hamburg Wochenende") == "Hamburg"
+
+    def test_lowercase_chat_style(self):
+        assert bot._extract_city("wetter in berlin morgen") == "berlin"
+
+    def test_question_form(self):
+        assert bot._extract_city("wie wird das Wetter am Sonntag in Köln") == "Köln"
+
+    def test_no_city(self):
+        assert bot._extract_city("wetter morgen") is None
+
+    def test_weather_hint_gate(self):
+        assert bot._WEATHER_HINT_RE.search("Wettervorhersage Kiel")
+        assert not bot._WEATHER_HINT_RE.search("beste Pizza Rezepte")
+
+
 class TestSsrfGuard:
     def test_private_ip_literals_blocked(self):
         for host in ["127.0.0.1", "10.1.2.3", "192.168.178.70", "172.16.0.1",
