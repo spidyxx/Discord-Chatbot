@@ -81,7 +81,16 @@ async def _task(entry: dict):
         delay = entry["due_ts"] - datetime.now(timezone.utc).timestamp()
         if delay > 0:
             await asyncio.sleep(delay)
-        await _fire(entry)
+        try:
+            await _fire(entry)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A transient failure (Discord hiccup, model error) must not kill
+            # the task: a recurring reminder would silently die until the next
+            # restart. Log and proceed as fired — recurring entries reschedule
+            # below, one-shots are dropped rather than retried forever.
+            _log.exception(f"Reminder [{entry['id']}] failed to fire")
 
         if entry.get("interval_seconds"):
             entry["due_ts"] += entry["interval_seconds"]

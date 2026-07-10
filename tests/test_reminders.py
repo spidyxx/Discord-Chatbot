@@ -50,6 +50,46 @@ def test_restore_drops_past_oneshot(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_task_survives_fire_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(rem, "_REMINDERS_FILE", tmp_path / "reminders.json")
+    calls = {"n": 0}
+
+    async def boom(entry):
+        calls["n"] += 1
+        raise RuntimeError("discord down")
+
+    monkeypatch.setattr(rem, "_fire", boom)
+
+    async def scenario():
+        entry = _entry(rid="x", due_offset=-1, interval=3600)
+        rem._save([entry])
+        task = asyncio.create_task(rem._task(entry))
+        await asyncio.sleep(0.05)
+        assert calls["n"] == 1
+        assert not task.done()  # recurring task survived the exception
+        assert entry["due_ts"] > datetime.now(timezone.utc).timestamp()
+        task.cancel()
+
+    asyncio.run(scenario())
+
+
+def test_oneshot_dropped_after_fire_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(rem, "_REMINDERS_FILE", tmp_path / "reminders.json")
+
+    async def boom(entry):
+        raise RuntimeError("discord down")
+
+    monkeypatch.setattr(rem, "_fire", boom)
+
+    async def scenario():
+        entry = _entry(rid="once", due_offset=-1, interval=0)
+        rem._save([entry])
+        await rem._task(entry)  # returns after one iteration for one-shots
+        assert rem._load() == []
+
+    asyncio.run(scenario())
+
+
 def test_restore_reschedules_past_recurring(monkeypatch, tmp_path):
     monkeypatch.setattr(rem, "_REMINDERS_FILE", tmp_path / "reminders.json")
 
