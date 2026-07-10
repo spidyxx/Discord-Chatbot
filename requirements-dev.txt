@@ -1,0 +1,6 @@
+-r requirements.txt
+pytest>=8.0
+pytest-asyncio>=0.23
+# discord.py needs audioop, removed from the stdlib in Python 3.13+.
+# Runtime (Docker) uses python:3.12 — dev-only shim.
+audioop-lts; python_version >= "3.13"

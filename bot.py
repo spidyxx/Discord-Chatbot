@@ -2122,4 +2122,5 @@ async def main():
     async with bot:
         await bot.start(DISCORD_TOKEN)
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
