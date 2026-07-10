@@ -148,6 +148,56 @@ class TestDeleteMemories:
         assert remaining == {"a", "c", "d"}
 
 
+class TestMemoryFilter:
+    def test_keyword_relevant_two_word_overlap(self):
+        words = bot._content_words("Wer will nachher Minecraft auf dem Server zocken?")
+        assert bot._keyword_relevant(words, "Der Server hat einen eigenen Minecraft-Server")
+
+    def test_keyword_relevant_single_distinctive_word(self):
+        words = bot._content_words("was heißt hier eigentlich Gemütlichkeit?")
+        assert bot._keyword_relevant(words, "Gemütlichkeit ist das Server-Motto")
+
+    def test_keyword_irrelevant(self):
+        words = bot._content_words("wie war dein Tag?")
+        assert not bot._keyword_relevant(words, "Gemütlichkeit ist das Server-Motto")
+
+    def test_no_haiku_call_without_trigger_memories(self, monkeypatch):
+        bot.save_memories([
+            {"id": "g1", "type": "general", "content": "Gemütlichkeit ist das Server-Motto",
+             "user_id": 1, "date": "01.01.2026"},
+            {"id": "g2", "type": "general", "content": "Freitags ist Zockerabend",
+             "user_id": 1, "date": "01.01.2026"},
+        ])
+        calls = {"n": 0}
+
+        async def fake_simple_call(*a, **k):
+            calls["n"] += 1
+            return "NONE"
+
+        monkeypatch.setattr(bot, "_simple_call", fake_simple_call)
+        block = asyncio.run(bot.build_memory_block(
+            "was bedeutet Gemütlichkeit für euch?", current_speaker="Anna"))
+        assert calls["n"] == 0            # no trigger memories → no API call
+        assert "Server-Motto" in block    # keyword-selected general memory
+        assert "Zockerabend" not in block
+
+    def test_haiku_still_called_for_triggers(self, monkeypatch):
+        bot.save_memories([
+            {"id": "t1", "type": "bot", "trigger": "wenn jemand nach Rittern fragt",
+             "content": "Du bist der Ritter des Servers", "user_id": 1, "date": "01.01.2026"},
+        ])
+        calls = {"n": 0}
+
+        async def fake_simple_call(*a, **k):
+            calls["n"] += 1
+            return "t1"
+
+        monkeypatch.setattr(bot, "_simple_call", fake_simple_call)
+        block = asyncio.run(bot.build_memory_block("erzähl mal was über Ritter", current_speaker="Anna"))
+        assert calls["n"] == 1
+        assert "Ritter des Servers" in block
+
+
 class TestEmojiReaction:
     def test_keyword_match(self, monkeypatch):
         monkeypatch.setattr(bot.random, "random", lambda: 0.0)  # pass the rate gate

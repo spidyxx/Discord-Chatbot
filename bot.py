@@ -391,9 +391,20 @@ def _always_on_memory_block() -> str:
     return _format_memory_sections(bot_facts, [], [], [], {})
 
 
+def _keyword_relevant(message_words: set[str], memory_content: str) -> bool:
+    """Pure-Python relevance check for [general] memories: content-word overlap
+    between message and memory. Two shared words, or one long distinctive one,
+    count as topical. Replaces the Haiku evaluation for general candidates —
+    only trigger conditions still need semantic judgment."""
+    overlap = message_words & _content_words(memory_content)
+    if len(overlap) >= 2:
+        return True
+    return any(len(w) >= 6 for w in overlap)
+
+
 async def _haiku_memory_filter(message_context: str, speaker: str,
                                 candidates: list[dict]) -> set[str]:
-    """Ask Haiku which trigger/general memory candidates are relevant to this message."""
+    """Ask Haiku which trigger memory candidates apply to this message."""
     if not candidates:
         return set()
     lines = []
@@ -502,11 +513,15 @@ async def build_memory_block(message_context: str, full_context: str = "",
                 return datetime.min
         flavor_candidates = sorted(flavor_candidates, key=_last_used_key)[:FLAVOR_MAX_PER_MESSAGE]
 
-    haiku_candidates = trigger_candidates + general_candidates
-    haiku_ids = await _haiku_memory_filter(message_context, current_speaker, haiku_candidates)
+    # General memories: cheap keyword overlap in Python. Trigger memories:
+    # their conditions ("wenn jemand X sagt") need semantic evaluation — only
+    # those go to Haiku, and the call is skipped entirely when none exist.
+    msg_words = _content_words(message_context)
+    selected_general = [m for m in general_candidates
+                        if _keyword_relevant(msg_words, m.get("content", ""))]
+    haiku_ids = await _haiku_memory_filter(message_context, current_speaker, trigger_candidates)
 
     selected_triggers = [m for m in trigger_candidates if m.get("id") in haiku_ids]
-    selected_general  = [m for m in general_candidates  if m.get("id") in haiku_ids]
     bot_facts         = (always_bot if include_always_on else []) + selected_triggers
 
     if track_usage:
