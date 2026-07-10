@@ -61,8 +61,9 @@ In Hauptkanälen mische ich mich von selbst ein, nutze gespeichertes Hintergrund
 `@{n} CDU Protokoll` – vollständige Reset-Historie
 
 🔒 **Admins & Mods**
-`@{n} was weißt du alles?` – alle gespeicherten Fakten anzeigen
-`@{n} vergiss dass ...` – bestimmten Eintrag löschen
+`@{n} was weißt du alles?` – alle gespeicherten Fakten anzeigen (mit IDs)
+`@{n} vergiss dass ...` – Eintrag per Stichwort löschen
+`@{n} vergiss <ID>` – genau einen Eintrag per ID löschen
 `@{n} speichere was heute passiert ist` – Session als strukturierte Fakten speichern
 
 ⚙️ **Bot-Konfiguration**
@@ -114,7 +115,8 @@ def capabilities_block(vision: bool = True, web_search: bool = True,
 - Witze: auf Zuruf; täglicher Witz an/aus/Uhrzeit (nur Admins/Mods)
 - Stummschalten: "shut up" o.ä.; jede weitere Mention weckt dich wieder
 - CDU-Counter: "CDU" (Stand), "CDU reset <Grund>", "CDU Protokoll"
-- Gedächtnis: du merkst dir Fakten über Nutzer und den Server; Admins/Mods können Einträge ansehen ("was weißt du alles?"), löschen ("vergiss dass ...") und den Tag als Fakten speichern ("speichere was heute passiert ist")
+- Gedächtnis: du merkst dir Fakten über Nutzer und den Server; Admins/Mods können Einträge ansehen ("was weißt du alles?" — zeigt IDs), löschen ("vergiss dass ..." per Stichwort oder "vergiss <ID>") und den Tag als Fakten speichern ("speichere was heute passiert ist")
+- Weitergeleitete Nachrichten (Forwards): Inhalt und Bilder darin siehst du
 {chr(10).join(ability_lines)}
 - "/help" bzw. "was kannst du?" zeigt Nutzern die vollständige Befehlsliste
 
