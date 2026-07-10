@@ -1,6 +1,42 @@
 """Pure helpers in bot.py: import works offline via the tests/conftest.py env stubs."""
 
+import asyncio
+from types import SimpleNamespace
+
 import bot
+
+
+class _FakeUsage:
+    cache_creation_input_tokens = 0
+    cache_read_input_tokens = 0
+    input_tokens = 0
+    output_tokens = 0
+
+
+def _fake_anthropic_response(text="ok"):
+    return SimpleNamespace(usage=_FakeUsage(), content=[SimpleNamespace(text=text)])
+
+
+def test_claude_loop_web_search_is_opt_in(monkeypatch):
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.clear()
+        captured.update(kwargs)
+        return _fake_anthropic_response()
+
+    monkeypatch.setattr(bot.anthropic.messages, "create", fake_create)
+    msgs = [{"role": "user", "content": "hi"}]
+
+    async def scenario():
+        out = await bot._claude_loop("sys", msgs, tier="normal")
+        assert out == "ok"
+        assert "tools" not in captured
+
+        await bot._claude_loop("sys", msgs, tier="normal", use_tools=True)
+        assert captured["tools"] == bot.TOOLS
+
+    asyncio.run(scenario())
 
 
 class TestStripRawToolCalls:

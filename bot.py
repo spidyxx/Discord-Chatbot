@@ -791,7 +791,8 @@ async def _ddg_search(query: str) -> str:
     return "\n".join(lines) if lines else ""
 
 
-async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str) -> str:
+async def _deepseek_call(system: str, messages: list, max_tokens: int, model: str,
+                         use_tools: bool = True) -> str:
     """Call DeepSeek via OpenAI-compatible endpoint with function-calling web search.
 
     DeepSeek V4 is text-only — no vision/multimodal support. Images are stripped
@@ -803,6 +804,15 @@ async def _deepseek_call(system: str, messages: list, max_tokens: int, model: st
     # enough headroom for a complete visible reply.
     expanded = min(max_tokens * 16, 65536)
     openai_messages = [{"role": "system", "content": system}] + _to_text_messages(messages, annotate_images=True)
+
+    if not use_tools:
+        response = await _deepseek_client.chat.completions.create(
+            model=model, messages=openai_messages, max_tokens=expanded,
+        )
+        text = _strip_raw_tool_calls((response.choices[0].message.content or "").strip())
+        if not text:
+            log.warning(f"Empty reply from {model} (no-tools call, usage={response.usage})")
+        return text
 
     for _ in range(4):  # max 4 tool-call rounds
         response = await _deepseek_client.chat.completions.create(
@@ -1103,23 +1113,27 @@ async def _fetch_message_images(msg) -> list[dict]:
 
 TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
 
-async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier: str = "normal") -> str:
+async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier: str = "normal",
+                       use_tools: bool = False) -> str:
+    """use_tools attaches the web_search tool. Off by default: evaluation,
+    digest, summary and transcript calls must not burn paid searches."""
     if tier == "local":
         return await _local_call(system, messages, max_tokens)
     model = _model_for_tier(tier)
     if model.startswith("gemini"):
         return await _gemini_call(system, messages, max_tokens, model)
     if model.startswith("deepseek"):
-        return await _deepseek_call(system, messages, max_tokens, model)
+        return await _deepseek_call(system, messages, max_tokens, model, use_tools=use_tools)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
     # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
     # a final response, so no client-side tool_result loop is needed.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    kwargs = {"tools": TOOLS} if use_tools else {}
     response = await asyncio.to_thread(
         anthropic.messages.create,
         model=model, max_tokens=max_tokens,
-        system=cached_system, tools=TOOLS, messages=messages,
+        system=cached_system, messages=messages, **kwargs,
     )
     u = response.usage
     log.info(
@@ -1313,7 +1327,7 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
         build_system_prompt(channel_id),
-        messages, tier=_tier(channel_id),
+        messages, tier=_tier(channel_id), use_tools=True,
     )
     return reply
 

@@ -68,6 +68,7 @@ async def _fire(entry: dict):
             bot_state.build_system_prompt(main_channel_id),
             [{"role": "user", "content": message}],
             tier=bot_state.reminder_tier,
+            use_tools=True,  # prompt reminders may need current info (weather, news)
         )
         await channel.send(f"<@{user_id}> {reply}")
         _log.info(f"Prompt reminder fired for {user_id}: {message[:60]}")
