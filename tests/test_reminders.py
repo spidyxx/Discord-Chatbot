@@ -6,6 +6,33 @@ from datetime import datetime, timezone
 from plugins.core import reminders as rem
 
 
+class TestParseReminderExtra:
+    def test_new_format_prompt(self):
+        assert rem._parse_reminder_extra("3600:0:P:erzähl einen Witz") == \
+            (3600, 0, "prompt", "erzähl einen Witz")
+
+    def test_new_format_notify(self):
+        assert rem._parse_reminder_extra("7200:86400:N:Tabletten nehmen") == \
+            (7200, 86400, "notify", "Tabletten nehmen")
+
+    def test_old_format_heuristic_prompt(self):
+        sec, interval, mode, msg = rem._parse_reminder_extra("60:0:erzähl mir was über Katzen")
+        assert (sec, interval, mode) == (60, 0, "prompt")
+
+    def test_old_format_heuristic_notify(self):
+        sec, interval, mode, msg = rem._parse_reminder_extra("60:0:Meeting mit Chef")
+        assert (sec, interval, mode) == (60, 0, "notify")
+
+    def test_message_with_colons_survives(self):
+        parsed = rem._parse_reminder_extra("60:0:N:Termin um 14:30 im Büro")
+        assert parsed == (60, 0, "notify", "Termin um 14:30 im Büro")
+
+    def test_garbage_returns_none(self):
+        assert rem._parse_reminder_extra("bald mal") is None
+        assert rem._parse_reminder_extra("") is None
+        assert rem._parse_reminder_extra("x:y:z") is None
+
+
 def _entry(rid="r1", due_offset=3600, interval=0):
     return {
         "id": rid, "channel_id": 1, "user_id": 2, "username": "u",

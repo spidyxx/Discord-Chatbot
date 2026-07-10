@@ -41,19 +41,46 @@ def _fmt_ts(ts: float) -> str:
 
 # ── Reminder lifecycle ────────────────────────────────────────────────────────
 
-async def _classify_mode(message: str) -> str:
-    text = await bot_state.claude_loop(
-        (
-            "Classify this reminder as PROMPT or NOTIFY.\n"
-            "PROMPT = the bot must generate a response (tell a joke, write a poem, ask a question, etc.)\n"
-            "NOTIFY = just remind the user about something (meeting, medication, task name, event, etc.)\n"
-            "Reply with exactly one word: PROMPT or NOTIFY"
-        ),
-        [{"role": "user", "content": message}],
-        max_tokens=10,
-        tier="cheap",
-    )
-    return "prompt" if text.strip().upper().startswith("PROMPT") else "notify"
+# Fallback mode detection when the classifier returns the old 3-field format:
+# generation verbs → the bot should produce a reply, otherwise plain notify.
+_PROMPT_HINT_RE = re.compile(
+    r"(?i)\b(erzähl|schreib|generier|erfinde|frag|sag mir|gib mir|stell mir|mach mir)"
+)
+
+
+def _infer_mode(message: str) -> str:
+    return "prompt" if _PROMPT_HINT_RE.search(message) else "notify"
+
+
+def _parse_reminder_extra(extra: str) -> tuple[int, int, str, str] | None:
+    """Parse the classifier payload.
+
+    New format:  <seconds>:<interval>:<P|N>:<message>  (mode decided by the
+    classifier in the same call — no separate mode-classification call).
+    Old format:  <seconds>:<interval>:<message>        (mode via regex heuristic).
+    Returns (seconds_until, interval_seconds, mode, message) or None.
+    """
+    parts = extra.split(":", 3)
+    if len(parts) == 4 and parts[2].strip().upper() in ("P", "N"):
+        try:
+            sec_until = int(re.sub(r"[^\d]", "", parts[0]))
+            interval  = int(re.sub(r"[^\d]", "", parts[1]))
+        except ValueError:
+            return None
+        mode = "prompt" if parts[2].strip().upper() == "P" else "notify"
+        message = parts[3].strip()
+        return (sec_until, interval, mode, message) if message else None
+
+    parts = extra.split(":", 2)
+    if len(parts) == 3:
+        try:
+            sec_until = int(re.sub(r"[^\d]", "", parts[0]))
+            interval  = int(re.sub(r"[^\d]", "", parts[1]))
+        except ValueError:
+            return None
+        message = parts[2].strip()
+        return (sec_until, interval, _infer_mode(message), message) if message else None
+    return None
 
 
 async def _fire(entry: dict):
@@ -184,8 +211,10 @@ class RemindersPlugin(Plugin):
     INTENT_LINES = [
         "REMINDER_LIST – eigene Erinnerungen anzeigen\n",
         "REMINDER_DELETE: <id> – Erinnerung per ID löschen\n",
-        "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<nachricht> – Erinnerung setzen "
-        "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n",
+        "REMINDER: <sekunden_bis_erste>:<intervall_sekunden>:<P|N>:<nachricht> – Erinnerung setzen "
+        "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich; "
+        "P = Bot soll dann selbst eine Antwort generieren wie einen Witz erzählen, "
+        "N = reine Benachrichtigung mit dem Erinnerungstext)\n",
     ]
 
     GATE_PATTERNS = [
@@ -223,26 +252,20 @@ class RemindersPlugin(Plugin):
                 await ctx.message.reply(f"Keine Erinnerung mit ID `{rid}` gefunden – oder sie gehört dir nicht.")
 
         elif ctx.intent == "REMINDER":
-            parts = ctx.extra.split(":", 2)
-            if len(parts) == 3:
-                try:
-                    sec_until  = int(re.sub(r"[^\d]", "", parts[0]))
-                    interval   = int(re.sub(r"[^\d]", "", parts[1]))
-                    remind_msg = parts[2].strip()
-                    mode       = await _classify_mode(remind_msg)
-                    rid        = _add(ctx.message.channel.id, ctx.message.author.id,
-                                      ctx.message.author.display_name, remind_msg,
-                                      sec_until, interval, mode)
-                    time_str  = _fmt_duration(sec_until)
-                    mode_hint = "*(ich generiere dann eine Antwort)*" if mode == "prompt" else "*(Erinnerungstext)*"
-                    if interval:
-                        reply_txt = f'Mach ich `[{rid}]` {mode_hint}. Erste Ausführung in {time_str}, dann alle {_fmt_duration(interval)}: "{remind_msg}"'
-                    else:
-                        reply_txt = f'Mach ich `[{rid}]` {mode_hint}. In {time_str}: "{remind_msg}"'
-                    await ctx.message.reply(reply_txt)
-                    return
-                except (ValueError, IndexError):
-                    pass
+            parsed = _parse_reminder_extra(ctx.extra)
+            if parsed is not None:
+                sec_until, interval, mode, remind_msg = parsed
+                rid = _add(ctx.message.channel.id, ctx.message.author.id,
+                           ctx.message.author.display_name, remind_msg,
+                           sec_until, interval, mode)
+                time_str  = _fmt_duration(sec_until)
+                mode_hint = "*(ich generiere dann eine Antwort)*" if mode == "prompt" else "*(Erinnerungstext)*"
+                if interval:
+                    reply_txt = f'Mach ich `[{rid}]` {mode_hint}. Erste Ausführung in {time_str}, dann alle {_fmt_duration(interval)}: "{remind_msg}"'
+                else:
+                    reply_txt = f'Mach ich `[{rid}]` {mode_hint}. In {time_str}: "{remind_msg}"'
+                await ctx.message.reply(reply_txt)
+                return
             await ctx.message.reply("Mit der Zeit hab ich's nicht so. Sag mir genauer wann.")
 
 
