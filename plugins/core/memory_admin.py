@@ -19,6 +19,11 @@ class MemoryAdminPlugin(Plugin):
         "MEMORY_DELETE: <stichwort> – bestimmten Fakt löschen (nur Admins/Mods)\n",
     ]
 
+    GATE_PATTERNS = [
+        r"weißt", r"vergiss", r"gespeichert", r"gedächtnis", r"\bmemory\b",
+        r"\bmerk", r"einträge", r"fakten", r"\bwissen\b",
+    ]
+
     intent_order = 20
 
     async def handle(self, ctx: MessageContext) -> None:

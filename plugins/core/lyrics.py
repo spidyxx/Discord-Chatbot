@@ -426,6 +426,8 @@ class LyricsPlugin(Plugin):
         "(Format: 'Künstler - Titel' mit Bindestrich, oder eine genius.com-URL)\n",
     ]
 
+    GATE_PATTERNS = [r"songtext", r"lyrics", r"liedtext", r"text\s+(?:von|zu|des)\b", r"genius\.com"]
+
     intent_order = 32
 
     def pre_classify(self, clean: str) -> tuple[str, str] | None:

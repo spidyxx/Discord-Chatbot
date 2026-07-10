@@ -21,6 +21,11 @@ class SummaryPlugin(Plugin):
         "'was gab's heute', 'was ist hier los', 'fass zusammen')\n",
     ]
 
+    GATE_PATTERNS = [
+        r"fass", r"zusammenfass", r"verpasst", r"passiert", r"neues", r"neuigkeiten",
+        r"was\s+(?:war|gab|lief)", r"was\s+ist\s+.{0,12}los", r"recap", r"tl;?dr",
+    ]
+
     intent_order = 60
 
     async def handle(self, ctx: MessageContext) -> None:

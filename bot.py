@@ -1809,8 +1809,16 @@ async def on_message(message: discord.Message):
             intent, extra = _pre
             log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}) [pre]: {intent} | '{clean[:60]}'")
         else:
-            intent, extra = await classify_intent(classify_text)
-            log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
+            # Keyword pre-gate: most mentions are plain conversation. If no
+            # plugin gate pattern and no URL matches, skip the classify call
+            # entirely — RESPOND is the classifier's fallback anyway.
+            gate = plugin_registry.gate_regex()
+            if gate is not None and not gate.search(classify_text) and not _URL_RE.search(classify_text):
+                intent, extra = "RESPOND", ""
+                log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}) [gate]: RESPOND | '{clean[:60]}'")
+            else:
+                intent, extra = await classify_intent(classify_text)
+                log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
 
         # ── Plugin dispatch ───────────────────────────────────────────────────
         if plugin_registry.handles(intent):

@@ -128,6 +128,15 @@ class Plugin(ABC):
     INTENT_PREFIXES: dict[str, str]  = {}  # override prefix for classify_intent matching
                                            # e.g. {"REMINDER": "REMINDER:"} for colon payloads
                                            # defaults to {label: label} if not specified
+    GATE_PATTERNS:   list[str]       = []  # case-insensitive regex fragments; if NO plugin
+                                           # pattern (and no URL) matches a mention, the
+                                           # Haiku classify call is skipped entirely and the
+                                           # message goes straight to RESPOND. Over-matching
+                                           # is safe (just costs one classify call);
+                                           # under-matching makes the intent unreachable for
+                                           # that phrasing. A plugin with INTENT_LINES but no
+                                           # GATE_PATTERNS disables the gate for everyone
+                                           # (fail open).
     intent_order: int = 50                 # lower = appears earlier in the injected prompt section
     model_tier: str | None = None          # "local" | "cheap" | "normal" | "expensive" | None (channel default)
 

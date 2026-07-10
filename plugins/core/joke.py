@@ -150,6 +150,8 @@ class JokePlugin(Plugin):
         "JOKE_TIME: <HH:MM> – Uhrzeit für den täglichen Witz festlegen\n",
     ]
 
+    GATE_PATTERNS = [r"witz", r"\bjoke", r"was lustiges", r"bring mich zum lachen"]
+
     intent_order = 55
 
     async def on_ready(self) -> None:

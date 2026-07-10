@@ -15,6 +15,12 @@ class MutePlugin(Plugin):
         "MUTE – Bot stummschalten\n",
     ]
 
+    GATE_PATTERNS = [
+        r"klappe", r"\bstill\b", r"\bleise\b", r"\bruhe\b", r"schnauze",
+        r"shut\s*up", r"\bmute\b", r"stumm", r"schweig", r"sei ruhig",
+        r"halt.{0,10}(?:mund|maul|fresse)", r"\bnerv", r"\bspam",
+    ]
+
     intent_order = 10  # first in prompt
 
     async def handle(self, ctx: MessageContext) -> None:

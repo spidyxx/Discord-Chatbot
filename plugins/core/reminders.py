@@ -188,6 +188,13 @@ class RemindersPlugin(Plugin):
         "(Intervall 0=einmalig, 604800=wöchentlich, 86400=täglich)\n",
     ]
 
+    GATE_PATTERNS = [
+        r"erinner", r"remind", r"täglich", r"wöchentlich", r"stündlich",
+        r"jede[nrms]?\b", r"vergiss nicht", r"denk\s*(?:dran|daran)",
+        r"\bin\s+\d+\s*(?:sek|min|std|stunde|tag|woche)",
+        r"um\s+\d{1,2}(?::\d{2})?\s*(?:uhr)?\b",
+    ]
+
     intent_order = 50
 
     async def on_ready(self) -> None:

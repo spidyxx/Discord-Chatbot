@@ -165,6 +165,8 @@ class ArdSoundsPlugin(Plugin):
         "ARDSOUNDS_SUMMARY: <url> – Nutzer möchte eine ardsounds.de-Podcast-Episode "
         "zusammengefasst haben (URL im Format ardsounds.de/episode/urn:ard:episode:...)\n",
     ]
+
+    GATE_PATTERNS = [r"ardsounds\.de"]
     intent_order = 31
 
     def pre_classify(self, clean: str) -> tuple[str, str] | None:

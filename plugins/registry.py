@@ -4,6 +4,7 @@ import configparser
 import importlib
 import logging
 import pkgutil
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -35,8 +36,34 @@ class Registry:
     def __init__(self):
         self._plugins:    list[Plugin]        = []
         self._intent_map: dict[str, Plugin]   = {}
+        self._gate_regex: re.Pattern | None   = None
+        self._gate_built: bool                = False
+
+    def gate_regex(self) -> "re.Pattern | None":
+        """Combined GATE_PATTERNS regex across all plugins, or None to disable
+        gating. None is returned when any plugin contributes classifier lines
+        (INTENT_LINES) without gate patterns — then every mention must go to
+        the classifier or that plugin's intents would become unreachable."""
+        if not self._gate_built:
+            self._gate_built = True
+            patterns: list[str] = []
+            for plugin in self._plugins:
+                if plugin.INTENT_LINES and not plugin.GATE_PATTERNS:
+                    _log.info(
+                        f"{plugin.__class__.__name__} has INTENT_LINES but no "
+                        f"GATE_PATTERNS — classify pre-gate disabled (fail open)"
+                    )
+                    self._gate_regex = None
+                    return None
+                patterns.extend(plugin.GATE_PATTERNS)
+            if patterns:
+                self._gate_regex = re.compile(
+                    "|".join(f"(?:{p})" for p in patterns), re.IGNORECASE
+                )
+        return self._gate_regex
 
     def register(self, plugin: Plugin) -> None:
+        self._gate_built = False  # new plugin may change the gate
         for intent in plugin.INTENTS:
             if intent in self._intent_map:
                 _log.warning(

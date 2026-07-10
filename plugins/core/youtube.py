@@ -48,6 +48,11 @@ class YoutubePlugin(Plugin):
         "(URL im Format youtube.com/watch?v=... oder youtu.be/...)\n",
     ]
 
+    # Only reachable via a YouTube link (in the message or the replied-to one,
+    # which bot.py appends to classify_text). The generic URL check in the
+    # pre-gate covers this too; the explicit pattern documents the dependency.
+    GATE_PATTERNS = [r"youtube\.com/watch", r"youtu\.be/"]
+
     intent_order = 30
 
     async def handle(self, ctx: MessageContext) -> None:

@@ -61,6 +61,8 @@ class SnapshotPlugin(Plugin):
         "als Memory speichern (z.B. 'speichere was heute passiert ist', 'merk dir die heutige Session', 'snapshot')\n",
     ]
 
+    GATE_PATTERNS = [r"speicher", r"\bmerk", r"snapshot", r"\bsession\b", r"sicher.{0,4}\b(?:das|den tag)\b"]
+
     intent_order = 65
 
     async def handle(self, ctx: MessageContext) -> None:

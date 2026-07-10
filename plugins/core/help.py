@@ -128,6 +128,11 @@ class HelpPlugin(Plugin):
         "HELP – Nutzer fragt was der Bot kann\n",
     ]
 
+    GATE_PATTERNS = [
+        r"\bhilfe\b", r"\bhelp\b", r"was kannst", r"kannst du (?:alles|so)",
+        r"funktionen", r"befehle", r"\bcommands\b", r"anleitung",
+    ]
+
     intent_order = 90  # just before RESPOND (which is always last in the footer)
 
     async def handle(self, ctx: MessageContext) -> None:
