@@ -1343,7 +1343,20 @@ _CLASSIFY_PREAMBLE = "Klassifiziere die Absicht. Antworte NUR im angegebenen For
 
 _CLASSIFY_FOOTER = (
     "RESPOND – alles andere\n\n"
+    "Eine [Kontext]-Zeile zeigt nur, worauf der Nutzer reagiert — Befehle zählen "
+    "ausschließlich aus der Nutzernachricht selbst. Reaktionen, Kritik oder Fragen "
+    "ZU etwas bereits Geschriebenem (z. B. 'wasn das für ein Witz?' nach einem "
+    "Witz) sind RESPOND, kein Befehl.\n\n"
 )
+
+
+def _classify_input(classify_text: str, bot_prev_text: str) -> str:
+    """Classifier input: the message text plus, for direct replies/follow-ups,
+    the bot message the user is reacting to as labeled context."""
+    prev = (bot_prev_text or "").strip()
+    if not prev:
+        return classify_text
+    return f"{classify_text}\n[Kontext – du hast zuvor geschrieben: {prev[:300]}]"
 
 async def classify_intent(text: str) -> tuple[str, str]:
     plugin_lines = "".join(plugin_registry.intent_lines())
@@ -1921,8 +1934,8 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             _channel_pending_msg.pop(channel_id, None)
 
 
-_last_bot_msg_ts: dict[int, float] = {}  # main channel → ts of the bot's message while it is still the newest
-_last_trigger:   dict[int, str]   = {}  # channel → what triggered the bot's last response
+_last_bot_msg: dict[int, tuple[float, str]] = {}  # main channel → (ts, text) of the bot's message while it is still the newest
+_last_trigger: dict[int, str]               = {}  # channel → what triggered the bot's last response
 
 
 def _is_reply_to_bot(message, bot_user) -> bool:
@@ -1950,12 +1963,12 @@ async def on_message(message: discord.Message):
         # every answer opens the next window and the bot replies to every
         # message forever.
         if is_main and _last_trigger.get(cid) != "followup":
-            _last_bot_msg_ts[cid] = message.created_at.timestamp()
+            _last_bot_msg[cid] = (message.created_at.timestamp(), message.content or "")
         return
 
     # Consume the marker: only the FIRST message after the bot's counts as a
     # follow-up; anything later must address the bot explicitly again.
-    prev_bot_ts = _last_bot_msg_ts.pop(cid, None)
+    prev_bot_ts, prev_bot_text = _last_bot_msg.pop(cid, (None, ""))
 
     is_mention  = bot.user in message.mentions
     is_reply    = not is_mention and _is_reply_to_bot(message, bot.user)
@@ -2010,13 +2023,27 @@ async def on_message(message: discord.Message):
             return
 
         classify_text = clean
+        url_ctx = False
         if message.reference and message.reference.resolved:
-            ref_content = (message.reference.resolved.content or "").strip()
+            ref_content = (getattr(message.reference.resolved, "content", "") or "").strip()
             # Only append referenced message if it contains a URL — needed so the
             # classifier can detect YOUTUBE_SUMMARY when the link is in the replied-to
             # message. Appending unconditionally caused false positive classification.
             if ref_content and _URL_RE.search(ref_content):
                 classify_text = f"{clean}\n[Benutzer antwortet auf: {ref_content[:300]}]"
+                url_ctx = True
+
+        # For direct replies/follow-ups the classifier additionally sees what the
+        # user is reacting to — without it, a meta-comment like 'wasn das für ein
+        # Witz?' right after a joke classifies as a joke COMMAND. Classifier input
+        # only: pre_classify/gate/plugins keep the unchanged classify_text, so
+        # URL pre-classification cannot fire on the bot's own links.
+        bot_prev = ""
+        if not url_ctx:
+            if _is_reply_to_bot(message, bot.user):
+                bot_prev = getattr(message.reference.resolved, "content", "") or ""
+            elif is_followup:
+                bot_prev = prev_bot_text
 
         _pre = plugin_registry.pre_classify(classify_text)
         if _pre:
@@ -2031,7 +2058,7 @@ async def on_message(message: discord.Message):
                 intent, extra = "RESPOND", ""
                 log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}) [gate]: RESPOND | '{clean[:60]}'")
             else:
-                intent, extra = await classify_intent(classify_text)
+                intent, extra = await classify_intent(_classify_input(classify_text, bot_prev))
                 log.info(f"Intent from {message.author} ({'priv' if privileged else 'user'}): {intent} | '{clean[:60]}'")
 
         # ── Plugin dispatch ───────────────────────────────────────────────────

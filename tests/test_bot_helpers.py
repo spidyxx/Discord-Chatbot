@@ -199,6 +199,22 @@ class TestDirectReply:
         assert not bot._in_followup_window(999.0, 1000.0, 0)
 
 
+class TestClassifyInput:
+    def test_no_context_passthrough(self):
+        assert bot._classify_input("erzähl einen Witz", "") == "erzähl einen Witz"
+        assert bot._classify_input("erzähl einen Witz", "   ") == "erzähl einen Witz"
+
+    def test_context_appended_labeled(self):
+        out = bot._classify_input("wasn das für nen Witz?", "Kommt ein Skelett zum Arzt.")
+        assert out.startswith("wasn das für nen Witz?\n[Kontext")
+        assert "Kommt ein Skelett zum Arzt." in out
+
+    def test_context_truncated_to_300(self):
+        out = bot._classify_input("ok", "x" * 500)
+        assert "x" * 300 in out
+        assert "x" * 301 not in out
+
+
 class TestDocKind:
     def test_pdf_by_content_type(self):
         assert bot._doc_kind("application/pdf", "handbuch.pdf") == "pdf"

@@ -89,6 +89,8 @@ The Anthropic `web_search` server tool is attached only where searching helps: c
 ### Intent classification
 `classify_intent()` uses the `cheap` tier to classify each @mention into an intent label (REMINDER, SUMMARY, etc.). The classifier prompt is built dynamically: a static preamble + plugin-contributed lines + a static footer. Plugins register their own intent labels and prompt lines — see plugin conventions below.
 
+For direct replies and follow-up-window messages the classifier input additionally carries the bot message the user is reacting to as a `[Kontext …]` line (`_classify_input()`), and the footer instructs that commands only count from the user's own text — otherwise meta-comments like "wasn das für ein Witz?" right after a joke classify as a joke command. The context goes into the **classifier input only**; `pre_classify`, the gate and `ctx.classify_text` see the unchanged text so URL pre-classification can't fire on the bot's own links.
+
 **Keyword pre-gate**: before the classifier runs, `registry.gate_regex()` (union of all plugins' `GATE_PATTERNS`) is matched against the mention text. No pattern hit and no URL → the message goes straight to RESPOND with **no classify call**. Over-matching is harmless (costs one classify call); under-matching makes an intent unreachable for that phrasing — `tests/test_gate.py` pins every advertised /help phrasing. A plugin with `INTENT_LINES` but no `GATE_PATTERNS` disables the gate globally (fail open), so community plugins keep working.
 
 ### Reading messages
