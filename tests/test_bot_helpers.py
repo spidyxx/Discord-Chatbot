@@ -178,23 +178,25 @@ class TestDirectReply:
         return m
 
     def test_reply_reference_to_bot(self):
-        assert bot._is_direct_reply(self._msg(ref_author=self.BOT), self.BOT, None, 1000.0, 300)
+        assert bot._is_reply_to_bot(self._msg(ref_author=self.BOT), self.BOT)
 
     def test_reply_reference_to_other_user(self):
-        assert not bot._is_direct_reply(self._msg(ref_author="someone"), self.BOT, None, 1000.0, 300)
+        assert not bot._is_reply_to_bot(self._msg(ref_author="someone"), self.BOT)
+
+    def test_no_reference(self):
+        assert not bot._is_reply_to_bot(self._msg(), self.BOT)
 
     def test_first_message_after_bot_within_window(self):
-        assert bot._is_direct_reply(self._msg(), self.BOT, 940.0, 1000.0, 300)
+        assert bot._in_followup_window(940.0, 1000.0, 300)
 
     def test_window_expired(self):
-        assert not bot._is_direct_reply(self._msg(), self.BOT, 600.0, 1000.0, 300)
+        assert not bot._in_followup_window(600.0, 1000.0, 300)
 
     def test_no_prior_bot_message(self):
-        assert not bot._is_direct_reply(self._msg(), self.BOT, None, 1000.0, 300)
+        assert not bot._in_followup_window(None, 1000.0, 300)
 
-    def test_heuristic_disabled_reference_still_works(self):
-        assert not bot._is_direct_reply(self._msg(), self.BOT, 999.0, 1000.0, 0)
-        assert bot._is_direct_reply(self._msg(ref_author=self.BOT), self.BOT, None, 1000.0, 0)
+    def test_heuristic_disabled(self):
+        assert not bot._in_followup_window(999.0, 1000.0, 0)
 
 
 class TestDocKind:

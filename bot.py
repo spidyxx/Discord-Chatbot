@@ -1921,38 +1921,47 @@ async def _try_respond(channel_id: int, trigger_msg: discord.Message = None):
             _channel_pending_msg.pop(channel_id, None)
 
 
-_last_bot_msg_ts: dict[int, float] = {}  # channel → ts of the bot's message while it is still the newest
+_last_bot_msg_ts: dict[int, float] = {}  # main channel → ts of the bot's message while it is still the newest
+_last_trigger:   dict[int, str]   = {}  # channel → what triggered the bot's last response
 
 
-def _is_direct_reply(message, bot_user, prev_bot_ts: float | None,
-                     now_ts: float, window_s: int) -> bool:
-    """True if the message is directly addressed to the bot without a mention:
-    a Discord reply to one of the bot's messages, or the first message shortly
-    after the bot spoke ('who answered last' semantics)."""
+def _is_reply_to_bot(message, bot_user) -> bool:
+    """True if the message is a Discord reply to one of the bot's messages."""
     ref = message.reference.resolved if message.reference else None
-    if getattr(ref, "author", None) == bot_user:
-        return True
+    return getattr(ref, "author", None) == bot_user
+
+
+def _in_followup_window(prev_bot_ts: float | None, now_ts: float, window_s: int) -> bool:
+    """True if the bot posted the previous message in this channel less than
+    window_s seconds ago ('who answered last' semantics)."""
     return (window_s > 0 and prev_bot_ts is not None
             and now_ts - prev_bot_ts <= window_s)
 
 
 @bot.event
 async def on_message(message: discord.Message):
-    cid = message.channel.id
+    cid     = message.channel.id
+    is_main = cid in MAIN_CHANNEL_IDS
     if message.author == bot.user:
-        # Remember that the bot posted the newest message in this channel —
-        # the next human message within DIRECT_REPLY_WINDOW_S is a follow-up.
-        _last_bot_msg_ts[cid] = message.created_at.timestamp()
+        # Open a follow-up window: the next human message within
+        # DIRECT_REPLY_WINDOW_S counts as addressed to the bot. Main channels
+        # only — mention-only channels answer exactly once per summon. Never
+        # re-arm after an answer that was itself a window follow-up, otherwise
+        # every answer opens the next window and the bot replies to every
+        # message forever.
+        if is_main and _last_trigger.get(cid) != "followup":
+            _last_bot_msg_ts[cid] = message.created_at.timestamp()
         return
 
     # Consume the marker: only the FIRST message after the bot's counts as a
-    # direct reply; anything later must address the bot explicitly again.
+    # follow-up; anything later must address the bot explicitly again.
     prev_bot_ts = _last_bot_msg_ts.pop(cid, None)
 
-    is_mention = bot.user in message.mentions
-    is_direct  = not is_mention and _is_direct_reply(
-        message, bot.user, prev_bot_ts, message.created_at.timestamp(), DIRECT_REPLY_WINDOW_S)
-    is_main    = cid in MAIN_CHANNEL_IDS
+    is_mention  = bot.user in message.mentions
+    is_reply    = not is_mention and _is_reply_to_bot(message, bot.user)
+    is_followup = (not is_mention and not is_reply and _in_followup_window(
+        prev_bot_ts, message.created_at.timestamp(), DIRECT_REPLY_WINDOW_S))
+    is_direct   = is_reply or is_followup
     log.info(f"on_message: #{cid} from {message.author} | mention={is_mention} direct={is_direct} main={is_main} muted={bot_state.muted}")
 
     # Re-activate
@@ -1965,6 +1974,7 @@ async def on_message(message: discord.Message):
         # fall through — process the message normally so the wakeup message is also answered
 
     if is_mention or is_direct:
+        _last_trigger[cid] = "followup" if is_followup else "explicit"
         # Discord adds link-preview embeds asynchronously; wait briefly then re-fetch
         if not message.attachments and re.search(r'https?://', message.content):
             await asyncio.sleep(1.5)
@@ -2051,7 +2061,7 @@ async def on_message(message: discord.Message):
     if not is_main:
         return
 
-    cid = message.channel.id
+    _last_trigger[cid] = "passive"
     if _channel_processing.get(cid):
         # Generation already running — flag that new messages arrived so it re-evaluates
         log.info(f"Channel #{cid}: message from {message.author.display_name} during evaluation — marked as pending")
