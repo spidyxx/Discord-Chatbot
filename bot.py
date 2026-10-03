@@ -1091,6 +1091,10 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
         log.info(f"fetch_context #{channel_id}: last msg role={last['role']} content={str(last['content'])[:80]!r}")
     return messages
 
+_ANSWER_MARKER = ("[Auf diese letzte Nachricht antwortest du jetzt. Die Nachrichten "
+                  "davor sind nur Kontext aus dem Kanal — fasse sie nicht zusammen, "
+                  "außer du wirst ausdrücklich darum gebeten.]")
+
 async def ask_claude(user_message: str, username: str, image_blocks: list = None, channel_id: int = None, before_id: int = None, memory_context: str = None) -> str:
     messages = await fetch_context(channel_id, before_id=before_id) if channel_id else []
     hist_text = " ".join(m["content"] for m in messages if isinstance(m["content"], str))
@@ -1117,6 +1121,11 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     content: list = [{"type": "text", "text": f"[{now_ts}] {username}: {user_message}"}]
     if image_blocks:
         content.extend(image_blocks)
+    # Consecutive user turns merge into one, so in a quiet channel the question
+    # is just the last line of a long chat log — Sonnet then tends to summarize
+    # the log instead of answering. Mark which message to answer. Sits after
+    # both cache breakpoints and is never re-rendered into history → cache-safe.
+    content.append({"type": "text", "text": _ANSWER_MARKER})
     if mem_block:
         # Per-message memories go into the FINAL user message, after both cache
         # breakpoints (system prompt + last history message). Injecting them into

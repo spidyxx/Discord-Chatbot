@@ -392,3 +392,19 @@ class TestResolveMentions:
             display_name = "Anna"
         out = bot.resolve_mentions("Hi <@42> und <@!42>", [M()])
         assert out == "Hi @Anna und @Anna"
+
+
+def test_ask_claude_marks_message_to_answer(monkeypatch):
+    """The final user turn carries the answer marker after the message text, so a
+    question at the end of a long all-user chat log isn't read as 'summarize this'."""
+    captured = {}
+
+    async def fake_loop(system, messages, **kwargs):
+        captured["messages"] = messages
+        return "ok"
+
+    monkeypatch.setattr(bot, "_claude_loop", fake_loop)
+    asyncio.run(bot.ask_claude("Braucht man einen Hundeführerschein?", "Venja"))
+    final = captured["messages"][-1]["content"]
+    assert "Venja: Braucht man einen Hundeführerschein?" in final[0]["text"]
+    assert final[-1]["text"] == bot._ANSWER_MARKER
