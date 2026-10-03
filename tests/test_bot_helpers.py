@@ -443,3 +443,16 @@ def test_claude_loop_effort_per_route(monkeypatch):
     assert captured["thinking"] == {"type": "adaptive"}
     assert captured["output_config"] == {"effort": "low"}
     assert captured["tools"][0]["type"] == "web_search_20260209"
+
+
+class TestStripAnnouncement:
+    def test_both_announcement_variants_vanish(self):
+        for updated in (True, False):
+            assert bot._strip_announcement(bot._announcement_text("1.1.45", updated)) == ""
+
+    def test_appended_announcement_removed_from_reply(self):
+        reply = "Danke fürs Neubauen, Spidy.\nIch bin zurück (Version 1.1.45)."
+        assert bot._strip_announcement(reply) == "Danke fürs Neubauen, Spidy."
+
+    def test_normal_text_untouched(self):
+        assert bot._strip_announcement("Ich bin zurück vom Einkaufen.") == "Ich bin zurück vom Einkaufen."

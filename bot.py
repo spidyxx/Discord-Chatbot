@@ -997,6 +997,25 @@ _ctx_anchor:       dict[int, int] = {}  # channel_id → message id of window st
 _ctx_trunc_before: dict[int, int] = {}  # channel_id → ids below this render truncated
 
 
+def _announcement_text(version: str, updated: bool) -> str:
+    """Startup message posted by on_ready (see _strip_announcement)."""
+    if updated:
+        return f"Ich bin zurück, gab ein Update und bin jetzt auf Version {version}."
+    return f"Ich bin zurück (Version {version})."
+
+# Startup announcements are bot messages but not conversation. As assistant
+# turns they merge with neighbouring replies, and the model (Sonnet 5.5) began
+# ending its own replies with them — which then reinforced itself. Stripped at
+# render time, deterministically, so history bytes stay cache-stable.
+_ANNOUNCEMENT_RE = re.compile(
+    r"\s*Ich bin zurück(?:, gab ein Update und bin jetzt auf Version [\w.\-]+\."
+    r"| \(Version [\w.\-]+\)\.)"
+)
+
+def _strip_announcement(text: str) -> str:
+    return _ANNOUNCEMENT_RE.sub("", text or "").strip()
+
+
 async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
     """Fetch recent channel messages as structured Claude conversation context."""
     channel = bot.get_channel(channel_id)
@@ -1058,8 +1077,10 @@ async def fetch_context(channel_id: int, before_id: int = None) -> list[dict]:
         # so they are only rendered on the recent tail (volatile zone anyway).
         rxn = _rxn_str(msg.reactions) if msg.id >= trunc_before else ""
         if msg.author == bot.user:
-            assistant_content = (msg.content or "") + rxn
-            messages.append({"role": "assistant", "content": assistant_content.strip()})
+            own_text = _strip_announcement(msg.content)
+            if not own_text:
+                continue  # pure startup announcement — not part of the conversation
+            messages.append({"role": "assistant", "content": (own_text + rxn).strip()})
             msg_ids.append(None)
         else:
             content = resolve_mentions(_display_text(msg), msg.mentions)
@@ -1698,10 +1719,7 @@ async def on_ready():
         except Exception as e:
             log.warning(f"Could not read last_announced_version: {e}")
 
-        if prev_version != BOT_VERSION:
-            msg = f"Ich bin zurück, gab ein Update und bin jetzt auf Version {BOT_VERSION}."
-        else:
-            msg = f"Ich bin zurück (Version {BOT_VERSION})."
+        msg = _announcement_text(BOT_VERSION, updated=prev_version != BOT_VERSION)
 
         try:
             _LAST_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
