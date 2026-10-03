@@ -40,6 +40,8 @@ All non-Anthropic backends live in `providers.py`: client init, message-format c
 
 The system prompt's `capabilities_block(vision=, web_search=, documents=)` is rendered from these caps — a tier backed by a model without vision is told it cannot see images instead of hallucinating. When adding a provider, extend `caps_for_model` and the call routing in `_claude_loop`/`_simple_call`; the capabilities block follows automatically.
 
+Claude 5-generation models (`claude-sonnet-5*`, `claude-opus-5*`, Fable, Mythos — `providers.is_thinking_model`) get `thinking: adaptive` + `output_config.effort` via `providers.anthropic_params()`; older Claude models get no extra params so their requests stay byte-identical. Effort is **fixed per call route** (chat replies, `should_respond`, `_simple_call`: `low`; everything else via `_claude_loop`'s default: `medium`) — changing thinking/effort between calls invalidates the messages cache. `max_tokens` is scaled ×1.3 (denser tokenizer) plus `THINKING_HEADROOM` (default 8000). `_response_text()` reads only text blocks (a thinking block comes first) and logs `Refusal [model]` / `Truncated [model]`.
+
 Gemini/DeepSeek reasoning models spend hidden reasoning tokens against the output budget; the caller's `max_tokens` is multiplied by `REASONING_TOKEN_MULTIPLIER` (default 16, env-configurable, capped at 65536).
 
 Token usage is recorded per day and model in `DATA_DIR/usage_stats.json` (90 days); a summary is logged daily at digest time.

@@ -14,8 +14,12 @@ class _FakeUsage:
     output_tokens = 0
 
 
-def _fake_anthropic_response(text="ok"):
-    return SimpleNamespace(usage=_FakeUsage(), content=[SimpleNamespace(text=text)])
+def _fake_anthropic_response(text="ok", stop_reason="end_turn", thinking=False):
+    content = [SimpleNamespace(type="text", text=text)]
+    if thinking:  # 5-generation models put an (empty) thinking block first
+        content.insert(0, SimpleNamespace(type="thinking", thinking="", signature="sig"))
+    return SimpleNamespace(usage=_FakeUsage(), content=content,
+                           stop_reason=stop_reason, stop_details=None)
 
 
 def test_claude_loop_web_search_is_opt_in(monkeypatch):
@@ -35,7 +39,7 @@ def test_claude_loop_web_search_is_opt_in(monkeypatch):
         assert "tools" not in captured
 
         await bot._claude_loop("sys", msgs, tier="normal", use_tools=True)
-        assert captured["tools"] == bot.TOOLS
+        assert captured["tools"] == [bot.providers.web_search_tool("claude-sonnet-4-6")]
 
     asyncio.run(scenario())
 
@@ -408,3 +412,34 @@ def test_ask_claude_marks_message_to_answer(monkeypatch):
     final = captured["messages"][-1]["content"]
     assert "Venja: Braucht man einen Hundeführerschein?" in final[0]["text"]
     assert final[-1]["text"] == bot._ANSWER_MARKER
+
+
+def test_simple_call_skips_thinking_block(monkeypatch):
+    """_simple_call used content[0].text — a leading thinking block crashed it."""
+    monkeypatch.setattr(bot.anthropic.messages, "create",
+                        lambda **kw: _fake_anthropic_response("RESPOND", thinking=True))
+    monkeypatch.setattr(bot, "CHEAP_MODEL", "claude-sonnet-5-5")
+    assert asyncio.run(bot._simple_call("cheap", "sys", "hi", 200)) == "RESPOND"
+
+
+def test_refusal_returns_empty(monkeypatch):
+    monkeypatch.setattr(bot.anthropic.messages, "create",
+                        lambda **kw: _fake_anthropic_response("", stop_reason="refusal"))
+    msgs = [{"role": "user", "content": "hi"}]
+    assert asyncio.run(bot._claude_loop("sys", msgs, tier="normal")) == ""
+
+
+def test_claude_loop_effort_per_route(monkeypatch):
+    captured = {}
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return _fake_anthropic_response(thinking=True)
+
+    monkeypatch.setattr(bot.anthropic.messages, "create", fake_create)
+    monkeypatch.setattr(bot, "NORMAL_MODEL", "claude-sonnet-5-5")
+    msgs = [{"role": "user", "content": "hi"}]
+    asyncio.run(bot._claude_loop("sys", msgs, tier="normal", effort="low", use_tools=True))
+    assert captured["thinking"] == {"type": "adaptive"}
+    assert captured["output_config"] == {"effort": "low"}
+    assert captured["tools"][0]["type"] == "web_search_20260209"

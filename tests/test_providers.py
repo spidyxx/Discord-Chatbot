@@ -132,3 +132,21 @@ class TestWeatherCityExtraction:
     def test_weather_hint_gate(self):
         assert providers._WEATHER_HINT_RE.search("Wettervorhersage Kiel")
         assert not providers._WEATHER_HINT_RE.search("beste Pizza Rezepte")
+
+
+class TestAnthropicParams:
+    def test_sonnet_46_request_unchanged(self):
+        # No thinking/effort keys: 4.6 requests must stay byte-identical (cache).
+        assert providers.anthropic_params("claude-sonnet-4-6", 2048, "low") == {"max_tokens": 2048}
+        assert providers.anthropic_params("claude-haiku-4-5-20251001", 200, "low") == {"max_tokens": 200}
+        assert providers.web_search_tool("claude-sonnet-4-6")["type"] == "web_search_20250305"
+
+    def test_thinking_models_get_adaptive_and_headroom(self):
+        for model in ("claude-sonnet-5-5", "claude-sonnet-5", "claude-opus-5-5", "claude-fable-5-1"):
+            p = providers.anthropic_params(model, 2048, "medium")
+            assert p["thinking"] == {"type": "adaptive"}
+            assert p["output_config"] == {"effort": "medium"}
+            assert p["max_tokens"] == int(2048 * 1.3) + providers.THINKING_HEADROOM
+
+    def test_opus_47_not_treated_as_thinking_model(self):
+        assert not providers.is_thinking_model("claude-opus-4-7")

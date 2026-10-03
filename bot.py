@@ -906,12 +906,22 @@ async def _fetch_message_images(msg) -> list[dict]:
 
 # ── Claude ───────────────────────────────────────────────────────────────────
 
-TOOLS = [{"type": "web_search_20250305", "name": "web_search", "max_uses": 3}]
+def _response_text(response, model: str) -> str:
+    """Joined text blocks (thinking blocks carry no .text). Logs refusals and
+    truncation — both otherwise surface only as an empty or cut-off reply."""
+    if response.stop_reason == "refusal":
+        details = getattr(response, "stop_details", None)
+        log.warning(f"Refusal [{model}]: category={getattr(details, 'category', None)}")
+    elif response.stop_reason == "max_tokens":
+        log.warning(f"Truncated [{model}]: hit max_tokens")
+    return "".join(b.text for b in response.content if getattr(b, "type", "text") == "text").strip()
 
 async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier: str = "normal",
-                       use_tools: bool = False) -> str:
+                       use_tools: bool = False, effort: str = "medium") -> str:
     """use_tools attaches the web_search tool. Off by default: evaluation,
-    digest, summary and transcript calls must not burn paid searches."""
+    digest, summary and transcript calls must not burn paid searches.
+    effort applies to thinking models only (providers.anthropic_params) and
+    must be fixed per call route — changing it invalidates the cache."""
     if tier == "local":
         return await providers.local_call(system, messages, max_tokens)
     model = _model_for_tier(tier)
@@ -921,14 +931,15 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
         return await providers.deepseek_call(system, messages, max_tokens, model, use_tools=use_tools)
     # Cache the system prompt (tools render before system, so this breakpoint covers both).
     # The system prompt is stable across all turns on the same channel → consistent cache hits.
-    # web_search_20250305 is server-side: Anthropic resolves the search server-side and returns
+    # web_search is a server tool: Anthropic resolves the search server-side and returns
     # a final response, so no client-side tool_result loop is needed.
     cached_system = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-    kwargs = {"tools": TOOLS} if use_tools else {}
+    kwargs = providers.anthropic_params(model, max_tokens, effort)
+    if use_tools:
+        kwargs["tools"] = [providers.web_search_tool(model)]
     response = await asyncio.to_thread(
         anthropic.messages.create,
-        model=model, max_tokens=max_tokens,
-        system=cached_system, messages=messages, **kwargs,
+        model=model, system=cached_system, messages=messages, **kwargs,
     )
     u = response.usage
     log.info(
@@ -938,7 +949,7 @@ async def _claude_loop(system: str, messages: list, max_tokens: int = 2048, tier
     )
     providers.record_usage(model, input_tokens=u.input_tokens, output_tokens=u.output_tokens,
                            cache_read=u.cache_read_input_tokens, cache_write=u.cache_creation_input_tokens)
-    return "".join(b.text for b in response.content if hasattr(b, "text")).strip()
+    return _response_text(response, model)
 
 async def _simple_call(tier: str, system: str, user_content, max_tokens: int) -> str:
     """Single-turn LLM call without tool use."""
@@ -953,12 +964,12 @@ async def _simple_call(tier: str, system: str, user_content, max_tokens: int) ->
         return await providers.deepseek_call(system, messages, max_tokens, model, use_tools=False)
     response = await asyncio.to_thread(
         anthropic.messages.create,
-        model=model, max_tokens=max_tokens,
-        system=system, messages=messages,
+        model=model, system=system, messages=messages,
+        **providers.anthropic_params(model, max_tokens, "low"),
     )
     u = response.usage
     providers.record_usage(model, input_tokens=u.input_tokens, output_tokens=u.output_tokens)
-    return response.content[0].text.strip()
+    return _response_text(response, model)
 
 def resolve_mentions(content: str, mentions: list) -> str:
     """Replace raw <@id> / <@!id> Discord mention syntax with display names."""
@@ -1136,7 +1147,7 @@ async def ask_claude(user_message: str, username: str, image_blocks: list = None
     messages.append({"role": "user", "content": content})
     reply = await _claude_loop(
         build_system_prompt(channel_id),
-        messages, tier=_tier(channel_id), use_tools=True,
+        messages, tier=_tier(channel_id), use_tools=True, effort="low",
     )
     return reply
 
@@ -1154,7 +1165,7 @@ async def should_respond(user_message: str, username: str, recent_context: str, 
     else:
         user_content = text
     reply = await _claude_loop(system, [{"role": "user", "content": user_content}],
-        tier=SHOULD_RESPOND_TIER)
+        tier=SHOULD_RESPOND_TIER, effort="low")
     reply = reply.strip()
     return bool(reply) and not reply.upper().startswith("SKIP")
 

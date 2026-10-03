@@ -141,6 +141,40 @@ def caps_for_model(model: str) -> ModelCaps:
     return ModelCaps()
 
 
+# Claude 5-generation models (Sonnet/Opus 5.x, Fable, Mythos) think by default
+# (adaptive), take an effort level, and use a tokenizer that counts ~30% more
+# tokens for the same text. Older Claude models get no extra params, so their
+# requests stay byte-identical. Thinking tokens count against max_tokens but are
+# only billed when actually produced, so the headroom costs nothing unused.
+_THINKING_MODEL_RE = re.compile(r"claude-(?:sonnet-5|opus-5|fable|mythos)")
+_TOKENIZER_FACTOR  = 1.3
+THINKING_HEADROOM  = int(os.environ.get("THINKING_HEADROOM", "8000"))
+
+
+def is_thinking_model(model: str) -> bool:
+    return bool(_THINKING_MODEL_RE.match(model or ""))
+
+
+def anthropic_params(model: str, max_tokens: int, effort: str) -> dict:
+    """Per-model request params for messages.create. Effort must stay fixed per
+    call route: a thinking/effort change between calls invalidates the
+    messages cache."""
+    if not is_thinking_model(model):
+        return {"max_tokens": max_tokens}
+    return {
+        "max_tokens":    int(max_tokens * _TOKENIZER_FACTOR) + THINKING_HEADROOM,
+        "thinking":      {"type": "adaptive"},
+        "output_config": {"effort": effort},
+    }
+
+
+def web_search_tool(model: str) -> dict:
+    """Newest web_search variant the model supports (20260209 adds dynamic
+    filtering of results before they enter context)."""
+    version = "web_search_20260209" if is_thinking_model(model) else "web_search_20250305"
+    return {"type": version, "name": "web_search", "max_uses": 3}
+
+
 # ── Clients (lazy singletons; only created when the API key/URL is set) ──────
 
 _ollama_client = None
